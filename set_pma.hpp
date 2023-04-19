@@ -5,29 +5,34 @@
 #include <climits>
 #include <cmath>
 #include <iostream>
+#include <vector>
 
 using namespace std;
 
 class SetPMA {
     public:
-        static constexpr int INT_NULL = INT_MAX;
+        typedef std::function<void(uint64_t)> range_func;
+        static constexpr uint64_t INT_NULL = UINT64_MAX;
         static constexpr uint32_t INVALID_IDX = UINT32_MAX;
         static constexpr double LEAF_MAX = 0.75;
         SetPMA(uint32_t size);
         uint32_t size();
+        SetPMA() = default;
 
-        void insert(int i);
-        bool query(int i);
+        void insert(uint64_t i);
+        bool query(uint64_t i);
         /* Sum keys in [left, right) */
-        int range(int left, int right);
+        uint64_t range_sum(uint64_t left, uint64_t right);
+        void range(uint64_t left, uint64_t right, range_func& op);
 
     private:
-        std::vector<int> data;
+        std::vector<uint64_t> data;
         uint32_t _size;
-        uint32_t search(int i);
+        uint32_t search(uint64_t i);
         uint32_t logN();
         uint32_t loglogN();
         uint32_t leaf_index(uint32_t index);
+        uint32_t next_leaf(uint32_t index);
         uint32_t leaf_number(uint32_t index);
         uint32_t leaf_position(uint32_t leaf_num);
         uint32_t num_leaves();
@@ -63,6 +68,7 @@ uint32_t SetPMA::size() { return _size; } // N
 uint32_t SetPMA::logN() { return next_power_of_2((uint32_t) log2(_size)); }
 uint32_t SetPMA::loglogN() { return (uint32_t) log2(logN()); }
 uint32_t SetPMA::leaf_index(uint32_t index) { return (index & ~(logN() - 1)); }
+uint32_t SetPMA::next_leaf(uint32_t index) { return leaf_index(index + logN()); }
 uint32_t SetPMA::leaf_number(uint32_t index) { return leaf_index(index) >> loglogN(); }
 uint32_t SetPMA::leaf_position(uint32_t leaf_num) { return leaf_num << loglogN(); }
 uint32_t SetPMA::num_leaves() { return _size / logN(); }
@@ -77,7 +83,7 @@ uint32_t SetPMA::count_nonempty(uint32_t index, uint32_t len)  {
     return full;
 }
 
-bool SetPMA::query(int key) {
+bool SetPMA::query(uint64_t key) {
     uint32_t idx = search(key);
     if (idx == INVALID_IDX) {
         return false;
@@ -87,11 +93,11 @@ bool SetPMA::query(int key) {
 
 // finds index of key in the PMA, if it is present
 // if it is not present, returns index of largest key in PMA smaller than key
-uint32_t SetPMA::search(int key) {
+uint32_t SetPMA::search(uint64_t key) {
     uint32_t low = 0;
     uint32_t high = leaf_index(_size - 1);
     // find minimum value in PMA
-    int min_key = data[low];
+    uint64_t min_key = data[low];
     if (key == min_key) {
         return low;
     }
@@ -100,7 +106,7 @@ uint32_t SetPMA::search(int key) {
         return INVALID_IDX;
     }
     
-    int max_key = INT_NULL;
+    uint64_t max_key = INT_NULL;
     uint32_t argmax = 0;
     if (data[high] != INT_NULL) {
         for (uint32_t i = 0; i < logN(); i += 1) {
@@ -171,7 +177,7 @@ void SetPMA::slide_right(uint32_t index) {
     }
 }
 
-void SetPMA::insert(int key) {
+void SetPMA::insert(uint64_t key) {
     // print_pma();
     uint32_t index = search(key);
     if (index != INVALID_IDX && data[index] == key) {
@@ -220,7 +226,7 @@ void SetPMA::insert(int key) {
 }
 
 void SetPMA::redistribute(uint32_t index, uint32_t len, uint32_t density_count) {
-    vector<int> temp;
+    vector<uint64_t> temp;
     temp.reserve(len); // t - s, t = index
     for (int i = index; i < len + index; ++i) {
         if (data[i] != INT_NULL) {
@@ -234,7 +240,7 @@ void SetPMA::redistribute(uint32_t index, uint32_t len, uint32_t density_count) 
     uint32_t x = 0;
     for (uint32_t leaf = 0; leaf < nl; ++leaf) {
         uint32_t num_elems_to_copy = elems_per_leaf + (leaf < density_count % nl);
-        memcpy(&data[index + leaf * logN()], &temp[x], num_elems_to_copy * sizeof(int));
+        memcpy(&data[index + leaf * logN()], &temp[x], num_elems_to_copy * sizeof(uint64_t));
         x += num_elems_to_copy;
     }
 }
@@ -258,14 +264,22 @@ void SetPMA::print_pma() {
     cout << "]" << endl;
 }
 
-// left inclusive, right exclusive
-int SetPMA::range(int left, int right) {
+uint64_t SetPMA::range_sum(uint64_t left, uint64_t right) {
+    int sum = 0;
+    range_func summer([&sum](uint64_t v){ sum += v; });
+    range(left, right, summer);
+    return sum;
+}
+
+// left inclusive, right exclusive. calls op with value of every element within range
+// potentially return whether this found any values in range?
+void SetPMA::range(uint64_t left, uint64_t right, range_func& op) {
     // print_pma();
     uint32_t left_index = search(left);
     uint32_t right_index = search(right);
     
     if (right_index == INVALID_IDX) {
-        return 0;
+        return;
     }
 
     if (left_index == INVALID_IDX) {
@@ -275,18 +289,21 @@ int SetPMA::range(int left, int right) {
 
     if (data[left_index] < left || data[left_index] == INT_NULL) {
         if (left_index == right_index) {
-            return 0;
+            return;
         } else {
             left_index += 1;
         }
     }
 
     right_index += 1;
-    int sum = 0;
-    for (int i = left_index; i < right_index; i += 1) {
+    for (uint32_t i = left_index; i < right_index; ) {
         if (data[i] != INT_NULL) {
-            sum += data[i];
+            op(data[i]);
+            i += 1;
+        }
+        else {
+            i = next_leaf(i);
         }
     }
-    return sum;
 }
+

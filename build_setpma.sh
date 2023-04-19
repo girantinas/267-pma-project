@@ -1,0 +1,1 @@
+clang++ -std=c++17 main_setpma.cpp && ./a.out ./tests/setpma_benchmark_inserts.txt ./tests/setpma_benchmark_outserts.txt > log.txt && diff tests/setpma_benchmark_outserts.txt tests/setpma_benchmark_solution.txt

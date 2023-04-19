@@ -52,22 +52,22 @@ int main(int argc, char** argv) {
         string command;
         iss >> command;
         if (command == "PUT") {
-            int insert_num;
+            uint64_t insert_num;
             iss >> insert_num;
             cout << "put(" << insert_num << ")" << endl;
             pma.insert(insert_num);
         } else if (command == "RANGE_QUERY") {
-            int range_start, range_end;
+            uint64_t range_start, range_end;
             iss >> range_start >> range_end;
             cout << "range query(" << range_start << "," << range_end << ")" << ", number " << num_range_queries << endl;
-            int result = pma.range(range_start, range_end);
+            uint64_t result = pma.range_sum(range_start, range_end);
             if (write_output) {
                 outfile << result << endl;
             }
             num_range_queries++;
         } else if (command == "QUERY_ALL") {
             cout << "query all" << endl;
-            int result = pma.range(0, INT_MAX - 1);
+            uint64_t result = pma.range_sum(0, INT_MAX - 1);
             if (write_output) {
                 outfile << result << endl;
             }
