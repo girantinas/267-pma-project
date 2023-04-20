@@ -16,14 +16,9 @@ if (NOT ${GROUP_NAME} STREQUAL None)
 endif ()
 
 # Build the kmer_hash executable
-add_executable(kmer_hash_19 kmer_hash.cpp)
-target_link_libraries(kmer_hash_19 PRIVATE UPCXX::upcxx)
-target_compile_definitions(kmer_hash_19 PRIVATE "KMER_LEN=19")
-
-# Build the kmer_hash executable
-add_executable(kmer_hash_51 kmer_hash.cpp)
-target_link_libraries(kmer_hash_51 PRIVATE UPCXX::upcxx)
-target_compile_definitions(kmer_hash_51 PRIVATE "KMER_LEN=51")
+add_executable(main_dist_pcsr main_dist_pcsr.cpp)
+target_link_libraries(main_dist_pcsr PRIVATE UPCXX::upcxx)
+target_compile_definitions(main_dist_pcsr PRIVATE "KMER_LEN=19")
 
 # Copy the job scripts
 configure_file(job-perlmutter-starter job-perlmutter-starter COPYONLY)

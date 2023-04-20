@@ -6,6 +6,9 @@
 #include <cmath>
 #include <iostream>
 #include <vector>
+#include <functional>
+#include <cstring>
+#include <cassert>
 
 using namespace std;
 
@@ -169,6 +172,7 @@ uint32_t SetPMA::search(uint64_t key) {
 
     cerr << "Leaf of PMA too dense (is the PMA properly left packed?)" << endl;
     assert(false); // in theory this should never happen, since that would mean leaf is completely full
+    return -1;
 }
 
 void SetPMA::slide_right(uint32_t index) {
