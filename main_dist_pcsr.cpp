@@ -19,7 +19,7 @@ using namespace std;
 int main(int argc, char** argv) {
     upcxx::init();
     ifstream infile;
-    ofstream outfile;
+    
     if (argc < 2) {
         infile.open("dist_pcsr_inserts.txt");
         if (!infile.is_open()) {
@@ -35,7 +35,7 @@ int main(int argc, char** argv) {
     }
 
     if (argc >= 3) {
-        outfile.open(argv[2]);
+        outfile.open(argv[2] + "_" + std::to_string(upcxx::rank_me()) + ".dat");
         if (!outfile.is_open()) {
             cerr << "Couldn't open " << argv[2] << endl;
             return -1; 
@@ -47,11 +47,20 @@ int main(int argc, char** argv) {
     string line;
 
     DistPCSR pcsr(1 << 4, 16384);
-
+    line_number = 0;
     while (getline(infile, line)) {
         istringstream iss(line);
         string command;
         iss >> command;
+        if (command == "START_INSERTS" || command == "START_QUERIES") {
+            upcxx::barrier();
+            line_number++;
+            continue;
+        }
+        if (line_number % upcxx::rank_n() != upcxx::rank_me()) {
+            line_number++;
+            continue;
+        }
         if (command == "PUT_EDGE") {
             uint32_t u, v;
             iss >> u >> v;
