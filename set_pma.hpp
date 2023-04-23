@@ -17,8 +17,8 @@ class SetPMA {
         typedef std::function<void(uint64_t)> range_func;
         static constexpr uint64_t INT_NULL = UINT64_MAX;
         static constexpr uint32_t INVALID_IDX = UINT32_MAX;
-        static constexpr double LEAF_MAX = 0.75;
         SetPMA(uint32_t size);
+        SetPMA(uint32_t size, double leaf_max);
         uint32_t size();
         SetPMA() = default;
 
@@ -27,6 +27,7 @@ class SetPMA {
         /* Sum keys in [left, right) */
         uint64_t range_sum(uint64_t left, uint64_t right);
         void range(uint64_t left, uint64_t right, range_func& op);
+        double _leaf_max = 0.75;
 
     private:
         std::vector<uint64_t> data;
@@ -52,6 +53,39 @@ SetPMA::SetPMA(uint32_t size) {
     data.resize(size, INT_NULL);
     _size = size;
     _num_elements = 0;
+}
+
+SetPMA::SetPMA(uint32_t size, double leaf_max) {
+    data.resize(size, INT_NULL);
+    _size = size;
+    _num_elements = 0;
+    _leaf_max = leaf_max;
+}
+
+// Gets the range [left-th minimum, right-th minimum)
+vector<uint64_t> SetPMA::get_min_range(uint32_t left, uint32_t right) {
+    int i;
+    uint32_t min_count = 0;
+    assert (left < data.size());
+    for(i = 0; min_count < left && i < data.size(); ++i) {
+        if (data[i] != INT_NULL) { ++min_count; }
+    }
+    vector<uint64_t> range;
+    if (i == data.size() && min_count < left) { cerr << "Left too big" << endl; }
+    range.push_back(data[i]);
+    for (int j = i + 1; j < data.size() && min_count < right - 1; ++j) {
+        if (data[j] != INT_NULL) {
+            min_count++;
+            range.push_back(data[j]);
+        }
+    }
+    assert ((right - left) == range.size());
+    return range;
+}
+
+void SetPMA::swap_data(std::vector<uint64_t>& temp, uint32_t density_count) {
+    std::swap(data, temp);
+    redistribute(0, _size, density_count);
 }
 
 uint32_t MSSB(uint32_t x) {
@@ -204,11 +238,9 @@ void SetPMA::insert(uint64_t key) {
     uint32_t density_count = count_nonempty(node_index, len);
     // while density too high, go up the implicit tree
     // go up to the biggest node above the density bound
-    uint32_t level = depth();
 
-    while (density_count >= (uint32_t) (LEAF_MAX * len) && (len < _size)) {
+    while (density_count > (uint32_t) (_leaf_max * len) && (len < _size)) {
         len *= 2;
-        level--;
         uint32_t new_node_index = (node_index / len) * len;
 
         if (new_node_index < node_index) {
@@ -219,7 +251,7 @@ void SetPMA::insert(uint64_t key) {
         node_index = new_node_index;
     }
 
-    if (len == _size && density_count >= (uint32_t) (LEAF_MAX * len)) {
+    if (len == _size && density_count >= (uint32_t) (_leaf_max * len)) {
         // need to double PMA
         resize();
     }

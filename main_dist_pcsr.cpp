@@ -11,7 +11,7 @@
 #include <sstream>
 #include <iostream>
 
-#include "distr_pcsr.hpp"
+#include "dist_pcsr.hpp"
 // #include "butil.hpp"
 
 using namespace std;
@@ -46,7 +46,9 @@ int main(int argc, char** argv) {
 
     string line;
 
-    DistPCSR pcsr(1 << 4, 16384);
+    upcxx::dist_object<DistPCSR> pcsr(1 << 4, 16384);
+
+    upcxx::barrier();
     line_number = 0;
     while (getline(infile, line)) {
         istringstream iss(line);
@@ -64,11 +66,11 @@ int main(int argc, char** argv) {
         if (command == "PUT_EDGE") {
             uint32_t u, v;
             iss >> u >> v;
-            pcsr.insert_edge(u, v);
+            insert_edge(pcsr, u, v);
         } else if (command == "QUERY_EDGE") {
             uint32_t u, v;
             iss >> u >> v;
-            bool exists = pcsr.query_edge(u, v);
+            bool exists = query_edge(pcsr, u, v); // TODO: batch these
             if (exists) {
                 outfile << "True" << endl;
             } else {
@@ -78,7 +80,7 @@ int main(int argc, char** argv) {
         } else if (command == "GET_OUT_EDGES") {
             uint32_t vertex;
             iss >> vertex;
-            vector<uint32_t> out_edges = pcsr.edges(vertex);
+            vector<uint32_t> out_edges = edges(pcsr, vertex);
             if (write_output) {
                 if (out_edges.empty()) {
                     outfile << "V: " << vertex << ", E: ";
@@ -92,7 +94,7 @@ int main(int argc, char** argv) {
             }
             outfile << endl;
         } else if (command == "QUERY_ALL_GRAPH") {
-            vector<pair<uint32_t, vector<uint32_t>>> result = pcsr.adjacency_lists();
+            vector<pair<uint32_t, vector<uint32_t>>> result = adjacency_lists(pcsr);
             if (write_output) {
                 for (auto& entry : result) {
                     uint32_t& vertex = entry.first;
