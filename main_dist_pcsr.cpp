@@ -19,6 +19,7 @@ using namespace std;
 int main(int argc, char** argv) {
     upcxx::init();
     ifstream infile;
+    ofstream outfile;
     
     if (argc < 2) {
         infile.open("dist_pcsr_inserts.txt");
@@ -35,7 +36,7 @@ int main(int argc, char** argv) {
     }
 
     if (argc >= 3) {
-        outfile.open(argv[2] + "_" + std::to_string(upcxx::rank_me()) + ".dat");
+        outfile.open(std::string(argv[2]) + "_" + std::to_string(upcxx::rank_me()) + ".dat");
         if (!outfile.is_open()) {
             cerr << "Couldn't open " << argv[2] << endl;
             return -1; 
@@ -46,38 +47,51 @@ int main(int argc, char** argv) {
 
     string line;
 
-    upcxx::dist_object<DistPCSR> pcsr(1 << 4, 16384);
-
+    upcxx::dist_object<DistPCSR> pcsr(DistPCSR(1 << 14, 16384));
+    auto start = std::chrono::high_resolution_clock::now();
     upcxx::barrier();
-    line_number = 0;
+    int line_number = 0;
+    upcxx::future<> my_futures;
     while (getline(infile, line)) {
         istringstream iss(line);
         string command;
         iss >> command;
-        if (command == "START_INSERTS" || command == "START_QUERIES") {
+        if (command == "START_INSERTS") {
             upcxx::barrier();
+            my_futures = upcxx::make_future();
+        } else if (command == "START_QUERIES") {
+            // finish up all your inserts
+            while (!my_futures.ready() && !pcsr->rq_queue.empty() && !pcsr->redistributing) {
+                upcxx::progress();
+                flush_queue(pcsr);
+            }
+            my_futures.wait();
+            auto finished_inserts = upcxx::barrier_async();
+            while (!finished_inserts.ready() && !pcsr->rq_queue.empty() && !pcsr->redistributing) {
+                upcxx::progress();
+                flush_queue(pcsr);
+            }
+            
+            finished_inserts.wait();
+        } else if (line_number % upcxx::rank_n() != upcxx::rank_me()) {
             line_number++;
             continue;
-        }
-        if (line_number % upcxx::rank_n() != upcxx::rank_me()) {
-            line_number++;
-            continue;
-        }
-        if (command == "PUT_EDGE") {
+        } else if (command == "PUT_EDGE") {
             uint32_t u, v;
             iss >> u >> v;
-            insert_edge(pcsr, u, v);
+            my_futures = upcxx::when_all(insert_edge(pcsr, u, v), my_futures);
         } else if (command == "QUERY_EDGE") {
             uint32_t u, v;
             iss >> u >> v;
-            bool exists = query_edge(pcsr, u, v); // TODO: batch these
+            bool exists = query_edge(pcsr, u, v).wait(); // TODO: batch these
             if (exists) {
-                outfile << "True" << endl;
+                outfile << u << " " << v << " True" << endl;
             } else {
-                outfile << "False" << endl;
+                outfile << u << " " << v << " False" << endl;
             }
-            outfile << endl;
+            // outfile << endl;
         } else if (command == "GET_OUT_EDGES") {
+            /*
             uint32_t vertex;
             iss >> vertex;
             vector<uint32_t> out_edges = edges(pcsr, vertex);
@@ -93,7 +107,9 @@ int main(int argc, char** argv) {
                 outfile << endl;
             }
             outfile << endl;
+            */
         } else if (command == "QUERY_ALL_GRAPH") {
+            /*
             vector<pair<uint32_t, vector<uint32_t>>> result = adjacency_lists(pcsr);
             if (write_output) {
                 for (auto& entry : result) {
@@ -106,13 +122,17 @@ int main(int argc, char** argv) {
                 }
                 outfile << endl;
             }
+            */
         } else {
             cerr << "Received unsupported command: " << command << endl;
         }
+        line_number++;
     }
 
     infile.close();
     outfile.close();
+
+    cout << "Proc " << upcxx::rank_me() << " ends with " << pcsr->spma._num_elements << " elements" << endl;
     upcxx::finalize();
     return 0;
 }

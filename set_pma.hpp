@@ -26,10 +26,11 @@ class SetPMA {
         bool query(uint64_t i);
         /* Sum keys in [left, right) */
         uint64_t range_sum(uint64_t left, uint64_t right);
+        vector<uint64_t> get_min_range(uint32_t left, uint32_t right);
+        void swap_data(std::vector<uint64_t>& temp);
         void range(uint64_t left, uint64_t right, range_func& op);
         double _leaf_max = 0.75;
 
-    private:
         std::vector<uint64_t> data;
         uint32_t _size;
         uint32_t search(uint64_t i);
@@ -64,7 +65,7 @@ SetPMA::SetPMA(uint32_t size, double leaf_max) {
 
 // Gets the range [left-th minimum, right-th minimum)
 vector<uint64_t> SetPMA::get_min_range(uint32_t left, uint32_t right) {
-    int i;
+    uint32_t i;
     uint32_t min_count = 0;
     assert (left < data.size());
     for(i = 0; min_count < left && i < data.size(); ++i) {
@@ -73,7 +74,7 @@ vector<uint64_t> SetPMA::get_min_range(uint32_t left, uint32_t right) {
     vector<uint64_t> range;
     if (i == data.size() && min_count < left) { cerr << "Left too big" << endl; }
     range.push_back(data[i]);
-    for (int j = i + 1; j < data.size() && min_count < right - 1; ++j) {
+    for (uint32_t j = i + 1; j < data.size() && min_count < right - 1; ++j) {
         if (data[j] != INT_NULL) {
             min_count++;
             range.push_back(data[j]);
@@ -83,7 +84,9 @@ vector<uint64_t> SetPMA::get_min_range(uint32_t left, uint32_t right) {
     return range;
 }
 
-void SetPMA::swap_data(std::vector<uint64_t>& temp, uint32_t density_count) {
+void SetPMA::swap_data(std::vector<uint64_t>& temp) {
+    uint32_t density_count = temp.size();
+    temp.resize(_size, INT_NULL);
     std::swap(data, temp);
     redistribute(0, _size, density_count);
 }
@@ -112,7 +115,7 @@ uint32_t SetPMA::num_leaves() { return _size / logN(); }
 uint32_t SetPMA::depth() { return MSSB(num_leaves()); }
 uint32_t SetPMA::count_nonempty(uint32_t index, uint32_t len)  { 
     uint32_t full = 0;
-    for (int i = index; i < index + len; ++i) {
+    for (uint32_t i = index; i < index + len; ++i) {
         if (data[i] != INT_NULL) {
             ++full;
         }
@@ -210,7 +213,7 @@ uint32_t SetPMA::search(uint64_t key) {
 }
 
 void SetPMA::slide_right(uint32_t index) {
-    for (int i = leaf_position(leaf_number(index) + 1) - 1; i > index; --i) {
+    for (uint32_t i = leaf_position(leaf_number(index) + 1) - 1; i > index; --i) {
         data[i] = data[i - 1];
     }
 }
@@ -251,8 +254,10 @@ void SetPMA::insert(uint64_t key) {
         node_index = new_node_index;
     }
 
-    if (len == _size && density_count >= (uint32_t) (_leaf_max * len)) {
-        // need to double PMA
+    if (len == _size && density_count > (uint32_t) (_leaf_max * len)) {
+        // need to double PMA, will disallow this
+        cerr << "No resizing allowed" << endl;
+        exit(0);
         resize();
     }
     
@@ -264,7 +269,7 @@ void SetPMA::insert(uint64_t key) {
 void SetPMA::redistribute(uint32_t index, uint32_t len, uint32_t density_count) {
     vector<uint64_t> temp;
     temp.reserve(len); // t - s, t = index
-    for (int i = index; i < len + index; ++i) {
+    for (uint32_t i = index; i < len + index; ++i) {
         if (data[i] != INT_NULL) {
             temp.push_back(data[i]);
             data[i] = INT_NULL;
@@ -301,7 +306,7 @@ void SetPMA::print_pma() {
 }
 
 uint64_t SetPMA::range_sum(uint64_t left, uint64_t right) {
-    int sum = 0;
+    uint64_t sum = 0;
     range_func summer([&sum](uint64_t v){ sum += v; });
     range(left, right, summer);
     return sum;
