@@ -47,11 +47,12 @@ int main(int argc, char** argv) {
 
     string line;
 
-    upcxx::dist_object<DistPCSR> pcsr(DistPCSR(1 << 14, 16384));
+    upcxx::dist_object<DistPCSR> pcsr(DistPCSR(1 << 15, 16000));
     auto start = std::chrono::high_resolution_clock::now();
     upcxx::barrier();
     int line_number = 0;
     upcxx::future<> my_futures;
+    int count = 0;
     while (getline(infile, line)) {
         istringstream iss(line);
         string command;
@@ -74,8 +75,6 @@ int main(int argc, char** argv) {
             
             finished_inserts.wait();
         } else if (line_number % upcxx::rank_n() != upcxx::rank_me()) {
-            line_number++;
-            continue;
         } else if (command == "PUT_EDGE") {
             uint32_t u, v;
             iss >> u >> v;
@@ -88,6 +87,13 @@ int main(int argc, char** argv) {
                 outfile << u << " " << v << " True" << endl;
             } else {
                 outfile << u << " " << v << " False" << endl;
+            }
+            if (u == 0 && v == 43) {
+                if (count == 1) {
+                    cout << "Got the same query twice when I should've not" << endl;
+                    exit(-1);
+                }
+                count++;
             }
             // outfile << endl;
         } else if (command == "GET_OUT_EDGES") {
@@ -133,6 +139,7 @@ int main(int argc, char** argv) {
     outfile.close();
 
     cout << "Proc " << upcxx::rank_me() << " ends with " << pcsr->spma._num_elements << " elements" << endl;
+    cout << "0 43 count: "  << count << endl;
     upcxx::finalize();
     return 0;
 }

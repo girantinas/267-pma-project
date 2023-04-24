@@ -434,7 +434,7 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
         uint32_t p;
         std::vector<uint32_t> p_commands;
         std::tie(p, p_commands) = commands[i];
-        auto f = upcxx::rpc(p, [](upcxx::dist_object<DistPCSR>& pcsr, const vector<range_t>& updated_ranges){
+        auto f = upcxx::rpc(p, [p](upcxx::dist_object<DistPCSR>& pcsr, const vector<range_t>& updated_ranges){
             for (uint32_t i = 0; i < updated_ranges.size(); i += 1) {
                 // check if updated_ranges is newer than cached_ranges
                 if (std::get<0>(pcsr->cached_ranges[i]) < std::get<0>(updated_ranges[i])) {
@@ -442,7 +442,8 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
                 }
             }
             pcsr->spma.swap_data(temp);
-            pcsr->redistributing = false;
+            if (p != upcxx::rank_me())
+                pcsr->redistributing = false;
         }, pcsr, pcsr->cached_ranges);
         all_team_swapped = upcxx::when_all(all_team_swapped, f);
     }
