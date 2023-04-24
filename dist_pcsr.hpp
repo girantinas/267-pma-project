@@ -27,7 +27,7 @@ struct Insert {
     uint32_t to;
     Insert(uint32_t from, uint32_t to) : from(from), to(to) {}
 };
-typedef tuple<milliseconds, uint64_t, uint64_t> range_t;
+typedef tuple<uint32_t, uint64_t, uint64_t> range_t;
 class DistPCSR {
     public:
         DistPCSR(uint32_t size, uint64_t max_val);
@@ -66,7 +66,7 @@ class DistPCSR {
 };
 
 std::ostream& operator<<(std::ostream& _os, const range_t& _p) {
-    milliseconds timestamp;
+    uint32_t timestamp;
     uint64_t low;
     uint64_t high;
     tie(timestamp, low, high) = _p;
@@ -75,7 +75,7 @@ std::ostream& operator<<(std::ostream& _os, const range_t& _p) {
     tie(low_from, low_to) = DistPCSR::get_edge_tuple(low);
     tie(high_from, high_to) = DistPCSR::get_edge_tuple(high);
     
-    _os << "[(from=" << low_from << ", to=" << low_to << "), (from=" << high_from << ", to=" << high_to << "))";
+    _os << "[(from=" << low_from << ", to=" << low_to << "), (from=" << high_from << ", to=" << high_to << ")) (version=" << timestamp << ")";
     return _os;
 }
 
@@ -114,7 +114,7 @@ DistPCSR::DistPCSR(uint32_t size, uint64_t max_val) : spma(SetPMA(size, INIT_LEA
         auto upper_from = (max_val / upcxx::rank_n()) * (i + 1);
         auto lower_tup = make_edge_tuple(lower_from, 0);
         auto upper_tup = make_edge_tuple(upper_from, TO_ONES);
-        cached_ranges.push_back(make_tuple(milliseconds::zero(), lower_tup, upper_tup));
+        cached_ranges.push_back(make_tuple(0, lower_tup, upper_tup));
     }
 
     redistributing = false;
@@ -426,7 +426,8 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
                 [&pcsr]() -> range_t {
                     std::sort(temp.begin(), temp.end());
                     pcsr->my_range = make_pair(temp.front(), temp.back());
-                    pcsr->cached_ranges[upcxx::rank_me()] = (range_t) make_tuple(duration_cast< milliseconds >(system_clock::now().time_since_epoch()), temp.front(), temp.back());
+                    uint32_t current_version = std::get<0>(pcsr->cached_ranges[upcxx::rank_me()]);
+                    pcsr->cached_ranges[upcxx::rank_me()] = (range_t) make_tuple(current_version + 1, temp.front(), temp.back());
                     
                     redistribute_log << "new range after retrieving all data " << pcsr->cached_ranges[upcxx::rank_me()] << timestamp_endl;
                     return pcsr->cached_ranges[upcxx::rank_me()];
@@ -458,6 +459,9 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
                 // check if updated_ranges is newer than cached_ranges
                 if (std::get<0>(pcsr->cached_ranges[i]) < std::get<0>(updated_ranges[i])) {
                     pcsr->cached_ranges[i] = updated_ranges[i];
+                }
+                else {
+                    redistribute_log << "stale range received from " << root_p << " to " << upcxx::rank_me() << ", ignoring" << timestamp_endl;
                 }
             }
             pcsr->spma.swap_data(temp);

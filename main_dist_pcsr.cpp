@@ -18,7 +18,14 @@
 using namespace std;
 
 int main(int argc, char** argv) {
+    if (std::strcmp(std::getenv("GASNET_OFI_RECEIVE_BUFF_SIZE"), "single")) {
+        cout << "Critical error: GASNET_OFI_RECEIVE_BUFF_SIZE workaround not detected (value=" << std::getenv("GASNET_OFI_RECEIVE_BUFF_SIZE") << ")" << endl;
+        exit(-1);
+    }
+    cout << "rank " << upcxx::rank_me() << " alive" << endl;
     upcxx::init();
+    cout << "rank " << upcxx::rank_me() << " initialized" << endl;
+
     ifstream infile;
     ofstream outfile;
     
