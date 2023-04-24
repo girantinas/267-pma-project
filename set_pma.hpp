@@ -88,6 +88,7 @@ void SetPMA::swap_data(std::vector<uint64_t>& temp) {
     uint32_t density_count = temp.size();
     temp.resize(_size, INT_NULL);
     std::swap(data, temp);
+    _num_elements = density_count;
     redistribute(0, _size, density_count);
 }
 

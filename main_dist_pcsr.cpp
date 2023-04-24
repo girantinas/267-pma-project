@@ -5,6 +5,7 @@
 #include <list>
 #include <numeric>
 #include <set>
+#include <thread>
 #include <upcxx/upcxx.hpp>
 #include <vector>
 #include <fstream> 
@@ -47,7 +48,7 @@ int main(int argc, char** argv) {
 
     string line;
 
-    upcxx::dist_object<DistPCSR> pcsr(DistPCSR(1 << 15, 16000));
+    upcxx::dist_object<DistPCSR> pcsr(DistPCSR(1 << 12, 16000));
     auto start = std::chrono::high_resolution_clock::now();
     upcxx::barrier();
     int line_number = 0;
@@ -62,13 +63,13 @@ int main(int argc, char** argv) {
             my_futures = upcxx::make_future();
         } else if (command == "START_QUERIES") {
             // finish up all your inserts
-            while (!my_futures.ready() && !pcsr->rq_queue.empty() && !pcsr->redistributing) {
+            while (!my_futures.ready() || !pcsr->rq_queue.empty() || pcsr->redistributing) {
                 upcxx::progress();
                 flush_queue(pcsr);
             }
             my_futures.wait();
             auto finished_inserts = upcxx::barrier_async();
-            while (!finished_inserts.ready() && !pcsr->rq_queue.empty() && !pcsr->redistributing) {
+            while (!finished_inserts.ready() || !pcsr->rq_queue.empty() || pcsr->redistributing) {
                 upcxx::progress();
                 flush_queue(pcsr);
             }
@@ -138,8 +139,8 @@ int main(int argc, char** argv) {
     infile.close();
     outfile.close();
 
-    cout << "Proc " << upcxx::rank_me() << " ends with " << pcsr->spma._num_elements << " elements" << endl;
-    cout << "0 43 count: "  << count << endl;
+    pcsr->print_dist_pcsr();
+    
     upcxx::finalize();
     return 0;
 }
