@@ -5,6 +5,7 @@ export GASNET_OFI_RECEIVE_BUFF_SIZE=single
 export GASNET_BACKTRACE_SIGNAL=SIGINT
 rm test*.dat
 rm final*.txt
+rm redistribute*.txt
 salloc -N 2 -A mp309 -t 10:00 -q debug --qos=interactive -C cpu srun -N 2 -n 8 ./main_dist_pcsr ../tests/dist_pcsr_inserts.txt test
 rm ../tests/dist_pcsr_outserts.txt
 rm ../tests/sorted_dist_pcsr_solution.txt

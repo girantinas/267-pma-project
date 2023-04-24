@@ -68,16 +68,27 @@ vector<uint64_t> SetPMA::get_min_range(uint32_t left, uint32_t right) {
     uint32_t i;
     uint32_t min_count = 0;
     assert (left < data.size());
-    for(i = 0; min_count < left && i < data.size(); ++i) {
-        if (data[i] != INT_NULL) { ++min_count; }
-    }
     vector<uint64_t> range;
-    if (i == data.size() && min_count < left) { cerr << "Left too big" << endl; }
-    range.push_back(data[i]);
-    for (uint32_t j = i + 1; j < data.size() && min_count < right - 1; ++j) {
-        if (data[j] != INT_NULL) {
-            min_count++;
-            range.push_back(data[j]);
+    // for(i = 0; min_count < left && i < data.size(); ++i) {
+    //     if (data[i] != INT_NULL) { ++min_count; }
+    // }
+    // if (i == data.size() && min_count < left) { cerr << "Left too big" << endl; }
+    // range.push_back(data[i]);
+    // for (uint32_t j = i + 1; j < data.size() && min_count < right - 1; ++j) {
+    //     if (data[j] != INT_NULL) {
+    //         min_count++;
+    //         range.push_back(data[j]);
+    //     }
+    // }
+    for (int i = 0; i < data.size(); i += 1) {
+        if (data[i] != INT_NULL) {
+            if (min_count >= left && min_count < right) {
+                range.push_back(data[i]);
+            }
+            min_count += 1;
+        }
+        if (min_count >= right) {
+            break;
         }
     }
     assert ((right - left) == range.size());

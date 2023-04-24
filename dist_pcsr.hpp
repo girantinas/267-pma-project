@@ -18,7 +18,7 @@
 
 using namespace std;
 using namespace std::chrono;
-#define timestamp_endl duration_cast<milliseconds>(system_clock::now().time_since_epoch()) - reference_time << endl
+#define timestamp_endl "    " << (duration_cast<milliseconds>(system_clock::now().time_since_epoch()) - reference_time).count() << "\n"
 milliseconds reference_time;
 ofstream redistribute_log;
 
@@ -64,6 +64,20 @@ class DistPCSR {
         vector<upcxx::team> teams; // teams[0] = you + neighbor, teams[1] = you + 3 adjacent ranks, etc. Only 2p teams in total, should be manageable
 
 };
+
+std::ostream& operator<<(std::ostream& _os, const range_t& _p) {
+    milliseconds timestamp;
+    uint64_t low;
+    uint64_t high;
+    tie(timestamp, low, high) = _p;
+    uint32_t low_from, low_to;
+    uint32_t high_from, high_to;
+    tie(low_from, low_to) = DistPCSR::get_edge_tuple(low);
+    tie(high_from, high_to) = DistPCSR::get_edge_tuple(high);
+    
+    _os << "[(from=" << low_from << ", to=" << low_to << "), (from=" << high_from << ", to=" << high_to << "))";
+    return _os;
+}
 
 upcxx::future<> insert_edge(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to);
 upcxx::future<bool> query_edge(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to);
@@ -121,9 +135,9 @@ DistPCSR::DistPCSR(uint32_t size, uint64_t max_val) : spma(SetPMA(size, INIT_LEA
         teams.push_back(world_team.split(color, key));
     }
     if (upcxx::rank_me() == 0) {
-        reference = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
+        reference_time = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
     }
-    reference = upcxx::broadcast(reference, 0).wait();
+    reference_time = upcxx::broadcast(reference_time, 0).wait();
 
     redistribute_log.open("redistribute_" + std::to_string(upcxx::rank_me()) + ".txt");
 }
@@ -160,7 +174,14 @@ uint32_t DistPCSR::target_rank(uint32_t from, uint32_t to) {
         edge_tuple, 
         [](const range_t& a, const uint64_t b) { return std::get<1>(a) < b; }
     );
-    uint32_t index = target - cached_ranges.begin() - 1;
+
+    uint32_t index;
+    if (target != cached_ranges.end() && std::get<1>(*target) == edge_tuple) {
+        index = target - cached_ranges.begin(); // need this because if its actually equal to low end of interval of some range, don't want smaller proc. basically, discrepancy between < and <=
+    }
+    else {
+        index = target - cached_ranges.begin() - 1;
+    }
     return index;
 }
 
@@ -178,7 +199,7 @@ void DistPCSR::insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t fr
     }
     // forwarding
     if (target_rank(from, to) != upcxx::rank_me()) {
-        cout << "forwarding edge " << from << " " << to << timestamp_endl;
+        cout << "forwarding edge " << from << " " << to << " from " << upcxx::rank_me() << " to " << target_rank(from, to) << timestamp_endl;
         insert_edge(pcsr, from, to);
     }
     else {
@@ -325,7 +346,13 @@ upcxx::future<> retrieve_command(upcxx::dist_object<DistPCSR>& pcsr, tuple<uint3
             redistribute_log << "Retrieve Command Checkpoint 1" << timestamp_endl;
             return pcsr->spma.get_min_range(remote_start, remote_end);
         }, pcsr).then(
-            [](vector<uint64_t> retrieved_values) {
+            [target_proc](const vector<uint64_t>& retrieved_values) {
+                for (uint64_t retrieved : retrieved_values) {
+                    if (retrieved == SetPMA::INT_NULL) {
+                        cerr << "proc " << upcxx::rank_me() << " received an INT_NULL in values retrieved from target_proc=" << target_proc << endl;
+                        exit(-1);
+                    }
+                }
                 temp.insert(temp.end(), retrieved_values.begin(), retrieved_values.end());
             }
         );
@@ -350,7 +377,8 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
     uint32_t start_proc = upcxx::rank_me();
     element_counts[start_proc] = total_elements;
     uint32_t level = 0;
-    while (total_elements >= (uint32_t) (pcsr->spma._leaf_max * n_procs * pcsr->size()) && (n_procs < upcxx::rank_n())) {
+    // need a buffer of at least 1 in each processor (arguably probably more)
+    while (total_elements >= (uint32_t) ((pcsr->spma._leaf_max * n_procs * pcsr->size()) - n_procs) && (n_procs < upcxx::rank_n())) {
         n_procs *= 2;
         redistribute_log << "expanding redistribute to " << n_procs << " ranks" << timestamp_endl;
         level++;
@@ -376,7 +404,7 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
     auto commands = get_redistribute_commands(element_counts, start_proc, n_procs, total_elements);
     upcxx::future<> all_team_finished = upcxx::make_future();
     
-    redistribute_log << "Checkpoint 1" << timestamp_endl;
+    // redistribute_log << "Checkpoint 1" << timestamp_endl;
 
     for (uint32_t i = 0; i < commands.size(); ++i) {
         uint32_t p;
@@ -385,7 +413,7 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
         auto lambda = [](upcxx::dist_object<DistPCSR>& pcsr, const vector<uint32_t>& flattened_commands) -> upcxx::future<range_t> {
             temp.clear();
             upcxx::future<> retrieve_future = upcxx::make_future();
-            redistribute_log << "Checkpoint 2" << timestamp_endl;
+            // redistribute_log << "Checkpoint 2" << timestamp_endl;
             
 
             for (uint32_t c = 0; c < flattened_commands.size(); c += 3) {
@@ -393,30 +421,32 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
                 tuple<uint32_t, uint32_t, uint32_t> command = make_tuple(flattened_commands[c], flattened_commands[c + 1], flattened_commands[c + 2]);
                 retrieve_future = upcxx::when_all(retrieve_future, retrieve_command(pcsr, command));
             }
-            redistribute_log << "Checkpoint 3" << timestamp_endl;
+            // redistribute_log << "Checkpoint 3" << timestamp_endl;
             upcxx::future<range_t> return_future = retrieve_future.then(
                 [&pcsr]() -> range_t {
                     std::sort(temp.begin(), temp.end());
                     pcsr->my_range = make_pair(temp.front(), temp.back());
                     pcsr->cached_ranges[upcxx::rank_me()] = (range_t) make_tuple(duration_cast< milliseconds >(system_clock::now().time_since_epoch()), temp.front(), temp.back());
-                    return pcsr->cached_ranges[(int) upcxx::rank_me()];
+                    
+                    redistribute_log << "new range after retrieving all data " << pcsr->cached_ranges[upcxx::rank_me()] << timestamp_endl;
+                    return pcsr->cached_ranges[upcxx::rank_me()];
                 }
             );
-            redistribute_log << "Checkpoint 4" << timestamp_endl;
+            // redistribute_log << "Checkpoint 4" << timestamp_endl;
             return return_future;
         };
-        redistribute_log << "Checkpoint 5" << timestamp_endl;
+        // redistribute_log << "Checkpoint 5" << timestamp_endl;
         upcxx::future<range_t> f = upcxx::rpc(p, lambda, pcsr, flattened_commands);
-        redistribute_log << "Checkpoint 6" << timestamp_endl;
+        // redistribute_log << "Checkpoint 6" << timestamp_endl;
         all_team_finished = upcxx::when_all(all_team_finished, f.then(
             [p, &pcsr](range_t range) {
                 pcsr->cached_ranges[p] = range;
             }
         ));
     }
-    redistribute_log << "Checkpoint 7" << timestamp_endl;
+    // redistribute_log << "Checkpoint 7" << timestamp_endl;
     all_team_finished.wait();
-    redistribute_log << "Checkpoint 8" << timestamp_endl;
+    // redistribute_log << "Checkpoint 8" << timestamp_endl;
 
     upcxx::future<> all_team_swapped = upcxx::make_future();
     for (uint32_t i = 0; i < commands.size(); ++i) {
@@ -439,7 +469,7 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
     }
     
     all_team_swapped.wait();
-    redistribute_log << "Checkpoint 9" << timestamp_endl;
+    // redistribute_log << "Checkpoint 9" << timestamp_endl;
     for (uint32_t i = 0; i < upcxx::rank_n(); i += 1) {
         if (i >= start_proc && i < start_proc + n_procs) {
             continue;
@@ -455,7 +485,7 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
 
     pcsr->redistributing = false;
     pcsr->release_redis_lock();
-    redistribute_log << "Checkpoint 10" << timestamp_endl;
+    // redistribute_log << "Checkpoint 10" << timestamp_endl;
     // pcsr->spma._leaf_max = min(pcsr->spma._leaf_max + 0.1, 0.8);
 }
 
@@ -466,15 +496,7 @@ void DistPCSR::print_dist_pcsr() {
         get<0>(my_range) << "," << get<1>(my_range) << ")" << timestamp_endl;
     int i = 0;
     for (auto range : cached_ranges) {
-        milliseconds timestamp;
-        uint64_t low;
-        uint64_t high;
-        tie(timestamp, low, high) = range;
-        uint32_t low_from, low_to;
-        uint32_t high_from, high_to;
-        tie(low_from, low_to) = get_edge_tuple(low);
-        tie(high_from, high_to) = get_edge_tuple(high);
-        outfile << "proc " << upcxx::rank_me() << " thinks proc " << i << " has range of [(from=" << low_from << ", to=" << low_to << "), (from=" << high_from << ", to=" << high_to << "))" << timestamp_endl; 
+        outfile << "proc " << upcxx::rank_me() << " thinks proc " << i << " has range of " << range << timestamp_endl; 
         i += 1;
     }
     
