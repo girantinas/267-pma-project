@@ -18,7 +18,7 @@
 
 using namespace std;
 using namespace std::chrono;
-#define timestamp_endl "    " << (duration_cast<milliseconds>(system_clock::now().time_since_epoch()) - reference_time).count() << "\n"
+#define timestamp_endl "    " << (duration_cast<milliseconds>(system_clock::now().time_since_epoch()) - reference_time).count() << endl;
 milliseconds reference_time;
 ofstream redistribute_log;
 
@@ -180,7 +180,13 @@ uint32_t DistPCSR::target_rank(uint32_t from, uint32_t to) {
         index = target - cached_ranges.begin(); // need this because if its actually equal to low end of interval of some range, don't want smaller proc. basically, discrepancy between < and <=
     }
     else {
-        index = target - cached_ranges.begin() - 1;
+        if (target == cached_ranges.begin()) {
+            // if this is smaller than all known intervals, send to rank 0
+            index = 0;
+        }
+        else {
+            index = target - cached_ranges.begin() - 1;
+        }
     }
     return index;
 }
@@ -237,6 +243,9 @@ upcxx::future<bool> query_edge(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from
     if (rank == upcxx::rank_me()) {
         return upcxx::make_future(pcsr->query_edge(from, to));
     }
+    
+    // cout << upcxx::rank_me() << " sending edge " << from << "," << to << " to " << rank << timestamp_endl;
+    // pcsr->print_dist_pcsr();
     
     return upcxx::rpc(rank, 
         [](upcxx::dist_object<DistPCSR>& local_pcsr, uint32_t from, uint32_t to) {

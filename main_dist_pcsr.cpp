@@ -55,7 +55,7 @@ int main(int argc, char** argv) {
 
     string line;
 
-    upcxx::dist_object<DistPCSR> pcsr(DistPCSR(1 << 12, 16000));
+    upcxx::dist_object<DistPCSR> pcsr(DistPCSR(1 << 11, 16000));
     auto start = std::chrono::high_resolution_clock::now();
     upcxx::barrier();
     int line_number = 0;
