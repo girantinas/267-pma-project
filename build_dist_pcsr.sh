@@ -6,10 +6,10 @@ export GASNET_BACKTRACE_SIGNAL=SIGUSR1
 rm test*.dat
 rm final*.txt
 rm redistribute*.txt
-# salloc -N 2 -A mp309 -t 10:00 -q debug --qos=interactive -C cpu srun -N 2 -n 16 ./main_dist_pcsr ../tests/dist_pcsr_inserts2.txt test
-srun -N 2 -n 64 ./main_dist_pcsr ../tests/dist_pcsr_inserts.txt test
+salloc -N 2 -A mp309 -t 10:00 -q debug --qos=interactive -C cpu srun -N 2 -n 8 ./main_dist_pcsr ../tests/pcsr_inserts_2.txt test
+# srun -N 2 -n 8 ./main_dist_pcsr ../tests/pcsr_inserts_2.txt test
 rm ../tests/dist_pcsr_outserts.txt
 rm ../tests/sorted_dist_pcsr_solution.txt
 cat test*.dat | sort > ../tests/dist_pcsr_outserts.txt
-cat ../tests/dist_pcsr_solution.txt | sort > ../tests/sorted_dist_pcsr_solution.txt
+cat ../tests/pcsr_solution_2.txt | sort > ../tests/sorted_dist_pcsr_solution.txt
 diff ../tests/sorted_dist_pcsr_solution.txt ../tests/dist_pcsr_outserts.txt > ../diff-log.txt

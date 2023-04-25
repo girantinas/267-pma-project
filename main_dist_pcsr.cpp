@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
     string line;
 
     if (upcxx::rank_me() == 0) cout << "(rank 0) finished setting up file I/O at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
-    upcxx::dist_object<DistPCSR> pcsr(DistPCSR(1 << 9, 16000));
+    upcxx::dist_object<DistPCSR> pcsr(DistPCSR(1 << 12, 16000));
     if (upcxx::rank_me() == 0) cout << "finished distpcsr construction at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
     upcxx::barrier();
     if (upcxx::rank_me() == 0) cout << "starting commands at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
@@ -90,16 +90,10 @@ int main(int argc, char** argv) {
         } else if (command == "PUT_EDGE") {
             uint32_t u, v;
             iss >> u >> v;
-            if (u == 998 && v == 852) {
-                cout << "rank " << upcxx::rank_me() << " got PUT command for 998,852" << endl;
-            }
             my_futures = upcxx::when_all(insert_edge(pcsr, u, v), my_futures);
         } else if (command == "QUERY_EDGE") {
             uint32_t u, v;
             iss >> u >> v;
-            if (u == 998 && v == 852) {
-                cout << "rank " << upcxx::rank_me() << " got QUERY command for 998,852" << endl;
-            }
             bool exists = query_edge(pcsr, u, v).wait(); // TODO: batch these
             if (exists) {
                 outfile << u << " " << v << " True" << endl;

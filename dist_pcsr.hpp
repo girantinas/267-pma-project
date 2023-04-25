@@ -193,9 +193,6 @@ void DistPCSR::insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t fr
         insert_edge(pcsr, from, to);
     }
     else {
-        if (from == 998 && to == 852) {
-            cout << "rank " << upcxx::rank_me() << " commiting PUT for 998,852" << endl;
-        }
         uint64_t edge = make_edge_tuple(from, to);
         spma.insert(edge);
         if (spma._num_elements > (uint32_t) (spma._leaf_max * spma.size())) {
@@ -206,10 +203,6 @@ void DistPCSR::insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t fr
 
 upcxx::future<> insert_edge(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to) {
     uint32_t rank = pcsr->target_rank(from, to);
-    if (from == 998 && to == 852) {
-        cout << "rank " << upcxx::rank_me() << " routing PUT for 998,852 to " << rank << endl;
-    }
-
     if (rank == upcxx::rank_me()) {
         pcsr->rq_queue.push_back(Insert(from, to));
         return upcxx::make_future();
@@ -230,26 +223,20 @@ bool DistPCSR::query_edge(uint32_t from, uint32_t to) {
 
 upcxx::future<bool> query_edge(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to) {
     uint32_t rank = pcsr->target_rank(from, to);
-    if (from == 998 && to == 852) {
-        cout << "rank " << upcxx::rank_me() << " routing QUERY for 998,852 to " << rank << endl;
-    }
     if (pcsr->redistributing) {
         cout << "why are we query edge during redistribute" << timestamp_endl;
         cout << "sending rpc to rank " << rank << timestamp_endl; 
     }
     if (rank == upcxx::rank_me()) {
-        if (from == 998 && to == 852) {
-            cout << "rank " << upcxx::rank_me() << " resolving QUERY for 998,852" << endl;
-        }
         bool result = pcsr->query_edge(from, to);
         if (result == false) {
-            cout << "critical: rank " << upcxx::rank_me() << " failed to find " << from << " " << to << endl;
+            /*cout << "critical: rank " << upcxx::rank_me() << " failed to find " << from << " " << to << endl;
             cout << "my_range: " << make_tuple(0, pcsr->my_range.first, pcsr->my_range.second) << endl;
             int i = 0;
             for (auto r : pcsr->cached_ranges) {
                 cout << "rank " << i << " cached range: " << r << endl;
                 i += 1;
-            }
+            }*/
         }
         return upcxx::make_future(result);
     }
