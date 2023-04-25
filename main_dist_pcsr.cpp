@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
     string line;
 
     if (upcxx::rank_me() == 0) cout << "(rank 0) finished setting up file I/O at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
-    upcxx::dist_object<DistPCSR> pcsr(DistPCSR(1 << 12, 16000));
+    upcxx::dist_object<DistPCSR> pcsr(DistPCSR(1 << 8, 16000));
     if (upcxx::rank_me() == 0) cout << "finished distpcsr construction at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
     upcxx::barrier();
     if (upcxx::rank_me() == 0) cout << "starting commands at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
@@ -102,10 +102,11 @@ int main(int argc, char** argv) {
             }
             // outfile << endl;
         } else if (command == "GET_OUT_EDGES") {
-            /*
             uint32_t vertex;
             iss >> vertex;
-            vector<uint32_t> out_edges = edges(pcsr, vertex);
+            vector<uint32_t> out_edges;
+            edges(pcsr, vertex, out_edges).wait();
+            std::sort(out_edges.begin(), out_edges.end());
             if (write_output) {
                 if (out_edges.empty()) {
                     outfile << "V: " << vertex << ", E: ";
@@ -117,8 +118,6 @@ int main(int argc, char** argv) {
                 }
                 outfile << endl;
             }
-            outfile << endl;
-            */
         } else if (command == "QUERY_ALL_GRAPH") {
             /*
             vector<pair<uint32_t, vector<uint32_t>>> result = adjacency_lists(pcsr);

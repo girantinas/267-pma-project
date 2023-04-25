@@ -54,10 +54,10 @@ RM = /global/common/software/nersc/pm-2022q4/spack/linux-sles15-zen/cmake-3.24.3
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /global/homes/a/alehero/267-pma-project
+CMAKE_SOURCE_DIR = /global/homes/j/jyou12/267-pma-project
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /global/homes/a/alehero/267-pma-project/build
+CMAKE_BINARY_DIR = /global/homes/j/jyou12/267-pma-project/build
 
 #=============================================================================
 # Directory level rules for the build root directory
@@ -81,14 +81,14 @@ clean: CMakeFiles/main_dist_pcsr.dir/clean
 CMakeFiles/main_dist_pcsr.dir/all:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/main_dist_pcsr.dir/build.make CMakeFiles/main_dist_pcsr.dir/depend
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/main_dist_pcsr.dir/build.make CMakeFiles/main_dist_pcsr.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/global/homes/a/alehero/267-pma-project/build/CMakeFiles --progress-num=1,2 "Built target main_dist_pcsr"
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --progress-dir=/global/homes/j/jyou12/267-pma-project/build/CMakeFiles --progress-num=1,2 "Built target main_dist_pcsr"
 .PHONY : CMakeFiles/main_dist_pcsr.dir/all
 
 # Build rule for subdir invocation for target.
 CMakeFiles/main_dist_pcsr.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /global/homes/a/alehero/267-pma-project/build/CMakeFiles 2
+	$(CMAKE_COMMAND) -E cmake_progress_start /global/homes/j/jyou12/267-pma-project/build/CMakeFiles 2
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 CMakeFiles/main_dist_pcsr.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /global/homes/a/alehero/267-pma-project/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /global/homes/j/jyou12/267-pma-project/build/CMakeFiles 0
 .PHONY : CMakeFiles/main_dist_pcsr.dir/rule
 
 # Convenience name for target.

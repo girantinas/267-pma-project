@@ -38,7 +38,7 @@ class DistPCSR {
         /* Queries if an edge exists. */
         bool query_edge(uint32_t from, uint32_t to);
         /* Edge list of a vertex. If the vertex does not exist, the list is empty. */
-        vector<uint32_t> edges(uint32_t from);
+        vector<uint32_t> edges_local(uint32_t from);
         /* Returns the entire adjacency list representation of the graph. */
         vector<pair<uint32_t, vector<uint32_t>>> adjacency_lists();
         /* Prints all attributes of this DistPCSR for debugging */
@@ -523,72 +523,36 @@ void DistPCSR::print_dist_pcsr() {
     redistribute_log.close();
 }
 
-/* TODO: FIX BELOW */
-
-/*
-vector<pair<uint32_t, vector<uint32_t>>> DistPCSR::adjacency_lists() { // fix
-    std::vector<upcxx::future<vector<pair<uint32_t, vector<uint32_t>>>>> futures;
-    for (uint32_t rank = 0; rank < upcxx::rank_n(); rank++) {
-        futures.push_back(upcxx::rpc(
-            rank,
-            [](upcxx::dist_object<SetPMA>& dist_spma) {
-                vector<pair<uint32_t, vector<uint32_t>>> adjacencies;
-                uint32_t curr_source = UINT32_MAX;
-                uint32_t* curr_source_ptr = &curr_source;
-                vector<uint32_t> adjacency;
-                auto f = SetPMA::range_func([&adjacencies, &adjacency, curr_source_ptr](uint64_t v) {
-                    uint32_t source, dest;
-                    source = v >> 32;
-                    dest = v;
-                    
-                    if (source != *curr_source_ptr) {
-                        if (*curr_source_ptr != UINT32_MAX) {
-                            adjacencies.push_back(
-                                std::make_pair(*curr_source_ptr, std::move(adjacency))
-                            );
-                            adjacency.clear();
-                        }
-                        *curr_source_ptr = source;
-                        adjacency.push_back(dest);
-                    } else {
-                        adjacency.push_back(dest);
-                    }
-                });
-                dist_spma->range(0, UINT64_MAX - 1, f);
-                    
-                // handle tail
-                if (curr_source != UINT32_MAX) {
-                    adjacencies.push_back(
-                        std::make_pair(curr_source, std::move(adjacency))
-                    );
-                }
-                return adjacencies;
-            }, dist_spma
-        ));
-    }
-    vector<pair<uint32_t, vector<uint32_t>>> combined_adj_list;
-    for (const auto& future : futures) {
-        const auto& adj_list = future.wait();
-        combined_adj_list.insert(combined_adj_list.end(), adj_list.begin(), adj_list.end());
-    }
-    return combined_adj_list;
+vector<uint32_t> DistPCSR::edges_local(uint32_t from) {
+    vector<uint32_t> edge_list;
+    auto edge_adder = SetPMA::range_func([&edge_list](uint64_t e){
+        edge_list.push_back(get_edge_tuple(e).second);
+    });
+    spma.range(make_edge_tuple(from, 0), make_edge_tuple(from, UINT32_MAX), edge_adder);
+    return edge_list;
 }
 
-vector<uint32_t> DistPCSR::edges(uint32_t from) {
-    uint32_t rank = target_rank(from);
+upcxx::future<> edges(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, vector<uint32_t>& dest) {
+    uint32_t begin_rank = pcsr->target_rank(from, 0);
+    uint32_t end_rank = pcsr->target_rank(from, UINT32_MAX);
 
-    return upcxx::rpc(rank,
-        [](upcxx::dist_object<SetPMA> &dist_spma, uint32_t from) {
-            uint64_t from_padded = ((uint64_t)from) << 32;
-            vector<uint32_t> edge_list;
-            auto edge_populater = SetPMA::range_func([&edge_list](uint64_t v) {
-                edge_list.push_back((uint32_t)v);
+    upcxx::future<> finish_future = upcxx::make_future();
+    for (int rank = begin_rank; rank < end_rank + 1; ++rank) {
+        if (rank == upcxx::rank_me()) {
+            auto f = upcxx::make_future(pcsr->edges_local(from)).then([&dest](vector<uint32_t> v) {
+                dest.insert(dest.end(), v.begin(), v.end());
             });
-
-            dist_spma->range(from_padded, from_padded | 0xFFFFFFFF, edge_populater);
-            return edge_list;
-        },
-        dist_spma, from
-    ).wait();
+            finish_future = upcxx::when_all(f, finish_future);
+        } else {
+            auto f = upcxx::rpc(rank, 
+                [from](upcxx::dist_object<DistPCSR>& local_pcsr) {
+                    return local_pcsr->edges_local(from);
+                }, pcsr
+            ).then([&dest](vector<uint32_t> v) {
+                dest.insert(dest.end(), v.begin(), v.end());
+            });
+            finish_future = upcxx::when_all(f, finish_future);
+        }
+    }
+    return finish_future;
 }
-*/

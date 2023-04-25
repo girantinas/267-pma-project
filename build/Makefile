@@ -57,10 +57,10 @@ RM = /global/common/software/nersc/pm-2022q4/spack/linux-sles15-zen/cmake-3.24.3
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /global/homes/a/alehero/267-pma-project
+CMAKE_SOURCE_DIR = /global/homes/j/jyou12/267-pma-project
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /global/homes/a/alehero/267-pma-project/build
+CMAKE_BINARY_DIR = /global/homes/j/jyou12/267-pma-project/build
 
 #=============================================================================
 # Targets provided globally by CMake.
@@ -87,9 +87,9 @@ rebuild_cache/fast: rebuild_cache
 
 # The main all target
 all: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /global/homes/a/alehero/267-pma-project/build/CMakeFiles /global/homes/a/alehero/267-pma-project/build//CMakeFiles/progress.marks
+	$(CMAKE_COMMAND) -E cmake_progress_start /global/homes/j/jyou12/267-pma-project/build/CMakeFiles /global/homes/j/jyou12/267-pma-project/build//CMakeFiles/progress.marks
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 all
-	$(CMAKE_COMMAND) -E cmake_progress_start /global/homes/a/alehero/267-pma-project/build/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /global/homes/j/jyou12/267-pma-project/build/CMakeFiles 0
 .PHONY : all
 
 # The main clean target
