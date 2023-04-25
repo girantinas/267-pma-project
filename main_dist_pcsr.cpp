@@ -75,16 +75,21 @@ int main(int argc, char** argv) {
             // finish up all your inserts
             while (!my_futures.ready() || !pcsr->rq_queue.empty() || pcsr->redistributing) {
                 upcxx::progress();
-                flush_queue(pcsr);
+                flush_queue(pcsr).wait();
             }
             my_futures.wait();
+            // at this point, all of OUR insert futures are satisfied, OUR queue is empty, and we are not redistributing
             auto finished_inserts = upcxx::barrier_async();
             while (!finished_inserts.ready() || !pcsr->rq_queue.empty() || pcsr->redistributing) {
                 upcxx::progress();
-                flush_queue(pcsr);
+                flush_queue(pcsr).wait();
             }
             finished_inserts.wait();
-            flush_queue(pcsr);
+            // at this point, everyones insert futures must be satisfied. all of the insert requests must be dropped in a queue somewhere. this DOESNT TAKE INTO ACCOUNT FORWARDING. ok
+            if (!pcsr->rq_queue.empty()) {
+                cerr << "why queue not empty" << timestamp_endl;
+                exit(-1);
+            }
             if (upcxx::rank_me() == 0) cout << "starting query phase at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
         } else if (line_number % upcxx::rank_n() != upcxx::rank_me()) {
         } else if (command == "PUT_EDGE") {

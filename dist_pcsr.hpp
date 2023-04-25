@@ -34,7 +34,7 @@ class DistPCSR {
         uint32_t size();
         uint32_t num_vertices; // Restrict this to power of 2
         /* Inserts an edge from one vertex to another. Fails if either vertex does not exist. */
-        void insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to);
+        upcxx::future<> insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to);
         /* Queries if an edge exists. */
         bool query_edge(uint32_t from, uint32_t to);
         /* Edge list of a vertex. If the vertex does not exist, the list is empty. */
@@ -178,19 +178,21 @@ uint32_t DistPCSR::target_rank(uint32_t from, uint32_t to) {
     return index;
 }
 
-void flush_queue(upcxx::dist_object<DistPCSR>& pcsr) {
+upcxx::future<> flush_queue(upcxx::dist_object<DistPCSR>& pcsr) {
+    upcxx::future<> all_flushed = upcxx::make_future();
     while (pcsr->rq_queue.size() != 0 && !pcsr->redistributing) {
         auto insert = pcsr->rq_queue.front();
         pcsr->rq_queue.pop_front();
-        pcsr->insert_edge_local(pcsr, insert.from, insert.to);        
+        all_flushed = upcxx::when_all(all_flushed, pcsr->insert_edge_local(pcsr, insert.from, insert.to));        
     }
+    return all_flushed;
 }
 
-void DistPCSR::insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to) {
+upcxx::future<> DistPCSR::insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to) {
     // forwarding
     if (target_rank(from, to) != upcxx::rank_me()) {
         cout << "forwarding edge " << from << " " << to << " from " << upcxx::rank_me() << " to " << target_rank(from, to) << timestamp_endl;
-        insert_edge(pcsr, from, to);
+        return insert_edge(pcsr, from, to);
     }
     else {
         uint64_t edge = make_edge_tuple(from, to);
@@ -198,6 +200,7 @@ void DistPCSR::insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t fr
         if (spma._num_elements > (uint32_t) (spma._leaf_max * spma.size())) {
             redistribute(pcsr);
         }
+        return upcxx::make_future();
     }
 }
 
@@ -477,6 +480,7 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
     
     all_team_swapped.wait();
     // redistribute_log << "Checkpoint 9" << timestamp_endl;
+    
     for (uint32_t i = 0; i < upcxx::rank_n(); i += 1) {
         if (i >= start_proc && i < start_proc + n_procs) {
             continue;
