@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
     string line;
 
     if (upcxx::rank_me() == 0) cout << "(rank 0) finished setting up file I/O at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
-    upcxx::dist_object<DistPCSR> pcsr(DistPCSR(1 << 11, 16000));
+    upcxx::dist_object<DistPCSR> pcsr(DistPCSR(1 << 9, 16000));
     if (upcxx::rank_me() == 0) cout << "finished distpcsr construction at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
     upcxx::barrier();
     if (upcxx::rank_me() == 0) cout << "starting commands at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
