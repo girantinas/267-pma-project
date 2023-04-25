@@ -19,6 +19,8 @@ class SetPMA {
         static constexpr uint32_t INVALID_IDX = UINT32_MAX;
         SetPMA(uint32_t size);
         SetPMA(uint32_t size, double leaf_max);
+        SetPMA(uint32_t size, double leaf_max, bool resize_allowed);
+        
         uint32_t size();
         SetPMA() = default;
 
@@ -46,14 +48,16 @@ class SetPMA {
         void redistribute(uint32_t index, uint32_t len, uint32_t density_count);
         void resize();
         void slide_right(uint32_t index);
-        void print_pma();
+        void print_pma(ostream& stream = cout);
         uint32_t _num_elements;
+        bool _resize_allowed;
 };
 
 SetPMA::SetPMA(uint32_t size) {
     data.resize(size, INT_NULL);
     _size = size;
     _num_elements = 0;
+    _resize_allowed = true;
 }
 
 SetPMA::SetPMA(uint32_t size, double leaf_max) {
@@ -61,6 +65,15 @@ SetPMA::SetPMA(uint32_t size, double leaf_max) {
     _size = size;
     _num_elements = 0;
     _leaf_max = leaf_max;
+    _resize_allowed = true;
+}
+
+SetPMA::SetPMA(uint32_t size, double leaf_max, bool resize_allowed) {
+    data.resize(size, INT_NULL);
+    _size = size;
+    _num_elements = 0;
+    _leaf_max = leaf_max;
+    _resize_allowed = resize_allowed;
 }
 
 // Gets the range [left-th minimum, right-th minimum)
@@ -268,11 +281,10 @@ void SetPMA::insert(uint64_t key) {
 
     if (len == _size && density_count > (uint32_t) (_leaf_max * len)) {
         // need to double PMA, will disallow this
-        cerr << "No resizing allowed" << endl;
-        exit(0);
-        resize();
+        if (_resize_allowed) {
+            resize();
+        }
     }
-    
     else if (len > logN()) {
         redistribute(node_index, len, density_count);
     }
@@ -304,17 +316,17 @@ void SetPMA::resize() {
     redistribute(0, _size, _num_elements);
 }
 
-void SetPMA::print_pma() {
-    cout << "[";
+void SetPMA::print_pma(ostream& stream) {
+    stream << "[";
     for (auto element : data) {
         if (element == INT_NULL) {
-            cout << "null" << " ";
+            stream << "null" << " ";
         }
         else {
-            cout << element << " ";
+            stream << element << " ";
         }
     }
-    cout << "]" << endl;
+    stream << "]" << endl;
 }
 
 uint64_t SetPMA::range_sum(uint64_t left, uint64_t right) {

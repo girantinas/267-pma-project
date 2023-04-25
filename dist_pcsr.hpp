@@ -60,9 +60,6 @@ class DistPCSR {
         bool redistributing;
         upcxx::global_ptr<int64_t> redis_lock; 
         upcxx::atomic_domain<int64_t> ad;
-        
-        vector<upcxx::team> teams; // teams[0] = you + neighbor, teams[1] = you + 3 adjacent ranks, etc. Only 2p teams in total, should be manageable
-
 };
 
 std::ostream& operator<<(std::ostream& _os, const range_t& _p) {
@@ -102,7 +99,7 @@ uint32_t DistPCSR::size() {
 }
 
 
-DistPCSR::DistPCSR(uint32_t size, uint64_t max_val) : spma(SetPMA(size, INIT_LEAF_MAX)) {
+DistPCSR::DistPCSR(uint32_t size, uint64_t max_val) : spma(SetPMA(size, INIT_LEAF_MAX, false)) {
     num_vertices = max_val;
     auto lower_from = (max_val / upcxx::rank_n()) * upcxx::rank_me();
     auto upper_from = (max_val / upcxx::rank_n()) * (upcxx::rank_me() + 1);
@@ -124,16 +121,6 @@ DistPCSR::DistPCSR(uint32_t size, uint64_t max_val) : spma(SetPMA(size, INIT_LEA
     redis_lock = upcxx::broadcast(redis_lock, 0).wait();
     ad = upcxx::atomic_domain<int64_t>({upcxx::atomic_op::compare_exchange, upcxx::atomic_op::store});
     
-    uint32_t n_procs_in_team = 1;
-    uint32_t proc = upcxx::rank_me();
-    uint32_t total_procs = upcxx::rank_n();
-    upcxx::team& world_team = upcxx::world();
-    for (uint32_t level = 0; level < MSSB(upcxx::rank_n()); level += 1) {
-        n_procs_in_team *= 2;
-        uint32_t color = total_procs / n_procs_in_team;
-        uint32_t key = total_procs % n_procs_in_team;
-        teams.push_back(world_team.split(color, key));
-    }
     if (upcxx::rank_me() == 0) {
         reference_time = duration_cast<milliseconds>(system_clock::now().time_since_epoch());
     }
@@ -200,22 +187,29 @@ void flush_queue(upcxx::dist_object<DistPCSR>& pcsr) {
 }
 
 void DistPCSR::insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to) {
-    if (spma._num_elements >= (uint32_t) (spma._leaf_max * spma.size())) {
-        redistribute(pcsr);
-    }
     // forwarding
     if (target_rank(from, to) != upcxx::rank_me()) {
         cout << "forwarding edge " << from << " " << to << " from " << upcxx::rank_me() << " to " << target_rank(from, to) << timestamp_endl;
         insert_edge(pcsr, from, to);
     }
     else {
+        if (from == 998 && to == 852) {
+            cout << "rank " << upcxx::rank_me() << " commiting PUT for 998,852" << endl;
+        }
         uint64_t edge = make_edge_tuple(from, to);
         spma.insert(edge);
+        if (spma._num_elements > (uint32_t) (spma._leaf_max * spma.size())) {
+            redistribute(pcsr);
+        }
     }
 }
 
 upcxx::future<> insert_edge(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to) {
     uint32_t rank = pcsr->target_rank(from, to);
+    if (from == 998 && to == 852) {
+        cout << "rank " << upcxx::rank_me() << " routing PUT for 998,852 to " << rank << endl;
+    }
+
     if (rank == upcxx::rank_me()) {
         pcsr->rq_queue.push_back(Insert(from, to));
         return upcxx::make_future();
@@ -236,12 +230,28 @@ bool DistPCSR::query_edge(uint32_t from, uint32_t to) {
 
 upcxx::future<bool> query_edge(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to) {
     uint32_t rank = pcsr->target_rank(from, to);
+    if (from == 998 && to == 852) {
+        cout << "rank " << upcxx::rank_me() << " routing QUERY for 998,852 to " << rank << endl;
+    }
     if (pcsr->redistributing) {
         cout << "why are we query edge during redistribute" << timestamp_endl;
         cout << "sending rpc to rank " << rank << timestamp_endl; 
     }
     if (rank == upcxx::rank_me()) {
-        return upcxx::make_future(pcsr->query_edge(from, to));
+        if (from == 998 && to == 852) {
+            cout << "rank " << upcxx::rank_me() << " resolving QUERY for 998,852" << endl;
+        }
+        bool result = pcsr->query_edge(from, to);
+        if (result == false) {
+            cout << "critical: rank " << upcxx::rank_me() << " failed to find " << from << " " << to << endl;
+            cout << "my_range: " << make_tuple(0, pcsr->my_range.first, pcsr->my_range.second) << endl;
+            int i = 0;
+            for (auto r : pcsr->cached_ranges) {
+                cout << "rank " << i << " cached range: " << r << endl;
+                i += 1;
+            }
+        }
+        return upcxx::make_future(result);
     }
     
     // cout << upcxx::rank_me() << " sending edge " << from << "," << to << " to " << rank << timestamp_endl;
@@ -269,6 +279,7 @@ uint32_t redis_count(
             start_proc + i,
             [](upcxx::dist_object<DistPCSR>& pcsr) {
                 pcsr->redistributing = true;
+                pcsr->spma.print_pma(redistribute_log);
                 return make_pair(pcsr->spma._num_elements, upcxx::rank_me());
             },
             pcsr
@@ -303,7 +314,7 @@ vector<pair<uint32_t, vector<uint32_t>>> get_redistribute_commands(
     uint32_t remote_proc = start_proc;
     for (uint32_t i = 0; i < num_procs; i += 1) {
         uint32_t retrieving_proc = start_proc + i;
-        uint32_t elements = elements_per_proc_floor + (retrieving_proc < total_elements % num_procs);
+        uint32_t elements = elements_per_proc_floor + (i < total_elements % num_procs);
         redistribute_log << "Generating commands for proc " << retrieving_proc << " to retrieve " << elements << " elements" << timestamp_endl;
         vector<uint32_t> command_list;
         while (elements > 0) {
@@ -385,12 +396,10 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
     uint32_t n_procs = 1;
     uint32_t start_proc = upcxx::rank_me();
     element_counts[start_proc] = total_elements;
-    uint32_t level = 0;
     // need a buffer of at least 1 in each processor (arguably probably more)
-    while (total_elements >= (uint32_t) ((pcsr->spma._leaf_max * n_procs * pcsr->size()) - n_procs) && (n_procs < upcxx::rank_n())) {
+    while (total_elements > (uint32_t) (pcsr->spma._leaf_max * n_procs * pcsr->size()) && (n_procs < upcxx::rank_n())) {
         n_procs *= 2;
         redistribute_log << "expanding redistribute to " << n_procs << " ranks" << timestamp_endl;
-        level++;
         uint32_t new_proc = (start_proc / n_procs) * n_procs;
         if (new_proc < start_proc) {
             total_elements += redis_count(pcsr, new_proc, n_procs / 2, element_counts);
@@ -399,10 +408,7 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
         }
         start_proc = new_proc;
     }
-    level -= 1;
     
-    upcxx::team& redis_team = pcsr->teams[level];
-
     if (n_procs == upcxx::rank_n() && total_elements >= (uint32_t) (pcsr->spma._leaf_max * n_procs * pcsr->size())) {
         cerr << "total elements " << total_elements << timestamp_endl;
         cerr << "total capacity " << (uint32_t) (pcsr->spma._leaf_max * n_procs * pcsr->size()) << timestamp_endl;
@@ -474,6 +480,7 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
                 }
             }
             pcsr->spma.swap_data(temp);
+            pcsr->spma.print_pma(redistribute_log);
             if (upcxx::rank_me() != root_p) { // team leader will set their own redistributing flag to false later
                 pcsr->redistributing = false;
             }

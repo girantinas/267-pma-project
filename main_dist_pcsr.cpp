@@ -25,6 +25,7 @@ int main(int argc, char** argv) {
     cout << "rank " << upcxx::rank_me() << " alive" << endl;
     upcxx::init();
     cout << "rank " << upcxx::rank_me() << " initialized" << endl;
+    auto start = std::chrono::high_resolution_clock::now();
 
     ifstream infile;
     ofstream outfile;
@@ -55,18 +56,20 @@ int main(int argc, char** argv) {
 
     string line;
 
+    if (upcxx::rank_me() == 0) cout << "(rank 0) finished setting up file I/O at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
     upcxx::dist_object<DistPCSR> pcsr(DistPCSR(1 << 11, 16000));
-    auto start = std::chrono::high_resolution_clock::now();
+    if (upcxx::rank_me() == 0) cout << "finished distpcsr construction at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
     upcxx::barrier();
+    if (upcxx::rank_me() == 0) cout << "starting commands at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
     int line_number = 0;
     upcxx::future<> my_futures;
-    int count = 0;
     while (getline(infile, line)) {
         istringstream iss(line);
         string command;
         iss >> command;
         if (command == "START_INSERTS") {
             upcxx::barrier();
+            if (upcxx::rank_me() == 0) cout << "starting insert phase at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
             my_futures = upcxx::make_future();
         } else if (command == "START_QUERIES") {
             // finish up all your inserts
@@ -80,28 +83,28 @@ int main(int argc, char** argv) {
                 upcxx::progress();
                 flush_queue(pcsr);
             }
-            
             finished_inserts.wait();
+            flush_queue(pcsr);
+            if (upcxx::rank_me() == 0) cout << "starting query phase at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
         } else if (line_number % upcxx::rank_n() != upcxx::rank_me()) {
         } else if (command == "PUT_EDGE") {
             uint32_t u, v;
             iss >> u >> v;
+            if (u == 998 && v == 852) {
+                cout << "rank " << upcxx::rank_me() << " got PUT command for 998,852" << endl;
+            }
             my_futures = upcxx::when_all(insert_edge(pcsr, u, v), my_futures);
         } else if (command == "QUERY_EDGE") {
             uint32_t u, v;
             iss >> u >> v;
+            if (u == 998 && v == 852) {
+                cout << "rank " << upcxx::rank_me() << " got QUERY command for 998,852" << endl;
+            }
             bool exists = query_edge(pcsr, u, v).wait(); // TODO: batch these
             if (exists) {
                 outfile << u << " " << v << " True" << endl;
             } else {
                 outfile << u << " " << v << " False" << endl;
-            }
-            if (u == 0 && v == 43) {
-                if (count == 1) {
-                    cout << "Got the same query twice when I should've not" << endl;
-                    exit(-1);
-                }
-                count++;
             }
             // outfile << endl;
         } else if (command == "GET_OUT_EDGES") {
@@ -148,6 +151,10 @@ int main(int argc, char** argv) {
 
     pcsr->print_dist_pcsr();
     
+    uint32_t rank = upcxx::rank_me();
+    cout << "rank " << rank << " finished at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
+    
     upcxx::finalize();
+    if (rank == 0) cout << "all finished at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
     return 0;
 }
