@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
 
     string line;
 
-    DistPCSR pcsr(1 << 4, 1000);
+    DistPCSR pcsr(1 << 4, 2048);
     int line_number = 0;
 
     chrono::high_resolution_clock::time_point start_time, end_time;
@@ -97,7 +97,6 @@ int main(int argc, char** argv) {
             } else {
                 outfile << u << " " << v << " False" << endl;
             }
-            // outfile << endl;
         } else if (command == "GET_OUT_EDGES") {
             uint32_t vertex;
             iss >> vertex;
@@ -113,7 +112,6 @@ int main(int argc, char** argv) {
                 }
                 outfile << endl;
             }
-            // outfile << endl;
         } else if (command == "QUERY_ALL_GRAPH") {
             vector<pair<uint32_t, vector<uint32_t>>> result = pcsr.adjacency_lists();
             if (write_output) {
@@ -125,8 +123,11 @@ int main(int argc, char** argv) {
                     }
                     outfile << endl;
                 }
-                // outfile << endl;
             }
+        // } else if (command == "BFS") {
+        //     uint32_t vertex;
+        //     iss >> vertex;
+        //     vector<int> distances = bfs_serial(pcsr, vertex);
         } else {
             cerr << "Received unsupported command: " << command << endl;
         }
@@ -187,8 +188,6 @@ vector<int> bfs(DistPCSR &pcsr, uint32_t source) {
 
     vector<int> local_distances(local_num_vertices, -1);
 
-    // cout << "Checkpoint 1" << endl;
-
     if (source >= start_vertex && source < end_vertex) {
         local_distances[source - start_vertex] = 0;
     }
@@ -201,46 +200,23 @@ vector<int> bfs(DistPCSR &pcsr, uint32_t source) {
 
     upcxx::dist_object<vector<uint32_t>> next_set_recv{vector<uint32_t>()};
 
-    // cout << "Checkpoint 2" << endl;
     upcxx::barrier();
 
     while (true) {
-        // cout << "Checkpoint 2.1" << endl;
 
         vector<uint32_t> next_set;
-        // cout << "Checkpoint 2.2" << endl;
         bool is_frontier_empty = frontiers.empty();
-        // cout << "Checkpoint 2.3" << endl;
         bool all_frontiers_empty = upcxx::reduce_all(is_frontier_empty, upcxx::op_fast_bit_and).wait();
-        // cout << "Checkpoint 2.4" << endl;
         if (all_frontiers_empty) {
-            // cout << "Checkpoint 2.5" << endl;
             break;
         }
-
-        // cout << "Checkpoint 3" << endl;
 
         for (uint32_t vertex : frontiers) {
             
 
             vector<uint32_t> neighbors = pcsr.edges(vertex);
             next_set.insert(next_set.end(), neighbors.begin(), neighbors.end());
-
-            // for (uint32_t neighbor : neighbors) {
-            //     if (neighbor >= start_vertex && neighbor < end_vertex) {
-            //         if ((*local_distances)[neighbor - start_vertex] == -1) {
-            //             (*local_distances)[neighbor - start_vertex] = current_distance + 1;
-            //             global_queue.push_back(neighbor);
-            //         }
-            //     } else {
-            //         int target_rank = pcsr.target_rank(neighbor);
-            //         int dest_rank_local_index = neighbor - pcsr.target_rank(neighbor) * local_num_vertices
-            //         int neighbor_distance = local_distances->fetch().wait()
-            //     }
-            // }
         }
-
-        // cout << "Checkpoint 4" << endl;
 
         vector<vector<uint32_t>> vertex_destinations;
         vertex_destinations.resize(upcxx::rank_n());
@@ -254,39 +230,33 @@ vector<int> bfs(DistPCSR &pcsr, uint32_t source) {
 
         upcxx::barrier();
 
-        // cout << "Checkpoint 5" << endl;
+        upcxx::future<> all_futures = upcxx::make_future();
 
         for (uint32_t target_rank = 0; target_rank < upcxx::rank_n(); target_rank++) {
             if (target_rank == upcxx::rank_me()) {
                 (*next_set_recv).insert((*next_set_recv).end(), vertex_destinations[target_rank].begin(), vertex_destinations[target_rank].end());
                 continue;
             }
-
-            upcxx::rpc(
+            all_futures = upcxx::when_all(all_futures, upcxx::rpc(
                 target_rank, 
                 [](upcxx::dist_object<vector<uint32_t>> &next_set_recv, const vector<uint32_t>& vertices) {
                     (*next_set_recv).insert((*next_set_recv).end(), vertices.begin(), vertices.end());
                 },
                 next_set_recv, vertex_destinations[target_rank] // Should I capture this instead?
-            ).wait();
+            ));
 
         }
+
+        all_futures.wait();
 
         upcxx::barrier();
         frontiers.clear();
 
-        // cout << "Checkpoint 6" << endl;
         for (uint32_t vertex : *next_set_recv) {
-            // cout << "Another checkpoint 1" << endl;
             int val = local_distances[vertex - start_vertex];
-            // if (level == 0)
-            // cout << "Another checkpoint 2. Val is " << val << endl;
-            // cout << "vertex - start_vertex is" << vertex - start_vertex << endl;
             if (local_distances[vertex - start_vertex] == -1) {
                 local_distances[vertex - start_vertex] = level + 1;
-                // cout << "Another checkpoint 3" << endl;
                 frontiers.push_back(vertex);
-                // cout << "Another checkpoint 4" << endl;
             }
         }
 
@@ -332,18 +302,23 @@ vector<double> pagerank(DistPCSR &pcsr) {
 
         upcxx::barrier();
 
+        upcxx::future<> all_futures = upcxx::make_future();
+
         for (int target_rank = 0; target_rank < upcxx::rank_n(); target_rank++) {
             if (target_rank == upcxx::rank_me()) {
                 (*contributions_recv).insert((*contributions_recv).end(), contributions_destinations[target_rank].begin(), contributions_destinations[target_rank].end());
             } else {
+                all_futures = upcxx::when_all(all_futures, 
                 upcxx::rpc(
                     target_rank, [](auto& contributions_recv, const vector<pair<uint32_t, double>>& contributions) {
                         (*contributions_recv).insert((*contributions_recv).end(), contributions.begin(), contributions.end());
                     },
                     contributions_recv, contributions_destinations[target_rank] // Should I capture this instead?
-                ).wait(); // Join these together then wait on all at once if we feel like 
+                )); // Join these together then wait on all at once if we feel like 
             }
         }
+
+        all_futures.wait();
 
         upcxx::barrier();
 
@@ -353,7 +328,6 @@ vector<double> pagerank(DistPCSR &pcsr) {
             local_pagerank[vertex - start_vertex] += contribution * damping_factor;
         }
         iteration++;
-        // cout << "Iteration: " << iteration << endl;
     }
     return local_pagerank;
 }
