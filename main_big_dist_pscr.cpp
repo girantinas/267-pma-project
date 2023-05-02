@@ -17,6 +17,30 @@
 
 using namespace std;
 
+// fully synchronizes a distributed PCSR
+void sync_dist_pcsr(upcxx::dist_object<DistPCSR>& pcsr) {
+    // finish up all your inserts
+    while (pcsr->outstanding_rpcs != 0 || !pcsr->rq_queue.empty() || pcsr->redistributing) {
+        upcxx::progress();
+        flush_queue(pcsr);
+    }
+    
+    // at this point, all of OUR insert futures are satisfied, OUR queue is empty, and we are not redistributing
+    auto finished_inserts = upcxx::barrier_async();
+    while (pcsr->outstanding_rpcs != 0 || !finished_inserts.ready() || !pcsr->rq_queue.empty() || pcsr->redistributing) {
+        upcxx::progress();
+        flush_queue(pcsr);
+    }
+    finished_inserts.wait();
+
+    finished_inserts = upcxx::barrier_async();
+    while (pcsr->outstanding_rpcs != 0 || !finished_inserts.ready() || !pcsr->rq_queue.empty() || pcsr->redistributing) {
+        upcxx::progress();
+        flush_queue(pcsr);
+    }
+    finished_inserts.wait();
+}
+
 int main(int argc, char** argv) {
     if (std::strcmp(std::getenv("GASNET_OFI_RECEIVE_BUFF_SIZE"), "single")) {
         cout << "Critical error: GASNET_OFI_RECEIVE_BUFF_SIZE workaround not detected (value=" << std::getenv("GASNET_OFI_RECEIVE_BUFF_SIZE") << ")" << endl;
@@ -31,7 +55,7 @@ int main(int argc, char** argv) {
     ofstream outfile;
     
     if (argc < 2) {
-        infile.open("dist_pcsr_inserts.txt");
+        infile.open("???");
         if (!infile.is_open()) {
             cerr << "Couldn't open pcsr_inserts.txt" << endl;
             return -1;
@@ -150,6 +174,8 @@ int main(int argc, char** argv) {
     infile.close();
     outfile.close();
 
+    pcsr->print_dist_pcsr();
+    
     uint32_t rank = upcxx::rank_me();
     cout << "rank " << rank << " finished at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
     
@@ -157,3 +183,86 @@ int main(int argc, char** argv) {
     if (rank == 0) cout << "all finished at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
     return 0;
 }
+/*
+vector<int> bfs(DistPCSR &pcsr, uint32_t source) {
+    uint32_t start_vertex = pcsr.num_vertices / upcxx::rank_n() * upcxx::rank_me();
+    uint32_t end_vertex = start_vertex + pcsr.num_vertices / upcxx::rank_n();
+    uint32_t local_num_vertices = end_vertex - start_vertex;
+
+    vector<int> local_distances(local_num_vertices, -1);
+
+    if (source >= start_vertex && source < end_vertex) {
+        local_distances[source - start_vertex] = 0;
+    }
+
+    deque<uint32_t> frontiers;
+    if (upcxx::rank_me() == pcsr.target_rank(source)) {
+        frontiers.push_back(source);
+    }
+    int level = 0;
+
+    upcxx::dist_object<vector<uint32_t>> next_set_recv{vector<uint32_t>()};
+
+    upcxx::barrier();
+
+    while (true) {
+
+        vector<uint32_t> next_set;
+        bool is_frontier_empty = frontiers.empty();
+        bool all_frontiers_empty = upcxx::reduce_all(is_frontier_empty, upcxx::op_fast_bit_and).wait();
+        if (all_frontiers_empty) {
+            break;
+        }
+
+        for (uint32_t vertex : frontiers) {
+            vector<uint32_t> neighbors = pcsr.edges(vertex);
+            next_set.insert(next_set.end(), neighbors.begin(), neighbors.end());
+        }
+
+        vector<vector<uint32_t>> vertex_destinations;
+        vertex_destinations.resize(upcxx::rank_n());
+
+        for (uint32_t next_vertex : next_set) {
+            int target_rank = pcsr.target_rank(next_vertex);
+            vertex_destinations[target_rank].push_back(next_vertex);
+        }
+
+        (*next_set_recv).clear();
+
+        upcxx::barrier();
+
+        upcxx::future<> all_futures = upcxx::make_future();
+
+        for (uint32_t target_rank = 0; target_rank < upcxx::rank_n(); target_rank++) {
+            if (target_rank == upcxx::rank_me()) {
+                (*next_set_recv).insert((*next_set_recv).end(), vertex_destinations[target_rank].begin(), vertex_destinations[target_rank].end());
+                continue;
+            }
+            all_futures = upcxx::when_all(all_futures, upcxx::rpc(
+                target_rank, 
+                [](upcxx::dist_object<vector<uint32_t>> &next_set_recv, const vector<uint32_t>& vertices) {
+                    (*next_set_recv).insert((*next_set_recv).end(), vertices.begin(), vertices.end());
+                },
+                next_set_recv, vertex_destinations[target_rank] // Should I capture this instead?
+            ));
+
+        }
+
+        all_futures.wait();
+
+        upcxx::barrier();
+        frontiers.clear();
+
+        for (uint32_t vertex : *next_set_recv) {
+            int val = local_distances[vertex - start_vertex];
+            if (local_distances[vertex - start_vertex] == -1) {
+                local_distances[vertex - start_vertex] = level + 1;
+                frontiers.push_back(vertex);
+            }
+        }
+
+        level++;
+    }
+    return local_distances;
+}
+*/
