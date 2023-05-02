@@ -73,33 +73,36 @@ int main(int argc, char** argv) {
             my_futures = upcxx::make_future();
         } else if (command == "START_QUERIES") {
             // finish up all your inserts
-            while (!my_futures.ready() || !pcsr->rq_queue.empty() || pcsr->redistributing) {
+            while (pcsr->outstanding_rpcs != 0 || !pcsr->rq_queue.empty() || pcsr->redistributing) {
                 upcxx::progress();
-                flush_queue(pcsr).wait();
+                flush_queue(pcsr);
             }
-            my_futures.wait();
+            
             // at this point, all of OUR insert futures are satisfied, OUR queue is empty, and we are not redistributing
             auto finished_inserts = upcxx::barrier_async();
-            while (!finished_inserts.ready() || !pcsr->rq_queue.empty() || pcsr->redistributing) {
+            while (pcsr->outstanding_rpcs != 0 || !finished_inserts.ready() || !pcsr->rq_queue.empty() || pcsr->redistributing) {
                 upcxx::progress();
-                flush_queue(pcsr).wait();
+                flush_queue(pcsr);
             }
             finished_inserts.wait();
-            // at this point, everyones insert futures must be satisfied. all of the insert requests must be dropped in a queue somewhere. this DOESNT TAKE INTO ACCOUNT FORWARDING. ok
-            if (!pcsr->rq_queue.empty()) {
-                cerr << "why queue not empty" << timestamp_endl;
-                exit(-1);
+
+            finished_inserts = upcxx::barrier_async();
+            while (pcsr->outstanding_rpcs != 0 || !finished_inserts.ready() || !pcsr->rq_queue.empty() || pcsr->redistributing) {
+                upcxx::progress();
+                flush_queue(pcsr);
             }
+            finished_inserts.wait();
+
             if (upcxx::rank_me() == 0) cout << "starting query phase at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
         } else if (line_number % upcxx::rank_n() != upcxx::rank_me()) {
         } else if (command == "PUT_EDGE") {
             uint32_t u, v;
             iss >> u >> v;
-            my_futures = upcxx::when_all(insert_edge(pcsr, u, v), my_futures);
+            insert_edge(pcsr, u, v);
         } else if (command == "QUERY_EDGE") {
             uint32_t u, v;
             iss >> u >> v;
-            bool exists = query_edge(pcsr, u, v).wait(); // TODO: batch these
+            bool exists = query_edge(pcsr, u, v).wait(); // TODO: batch these   
             if (exists) {
                 outfile << u << " " << v << " True" << endl;
             } else {

@@ -34,7 +34,7 @@ class DistPCSR {
         uint32_t size();
         uint32_t num_vertices; // Restrict this to power of 2
         /* Inserts an edge from one vertex to another. Fails if either vertex does not exist. */
-        upcxx::future<> insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to);
+        void insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to);
         /* Queries if an edge exists. */
         bool query_edge(uint32_t from, uint32_t to);
         /* Edge list of a vertex. If the vertex does not exist, the list is empty. */
@@ -45,7 +45,7 @@ class DistPCSR {
         void print_dist_pcsr();
 
         deque<Insert> rq_queue;
-        static constexpr double INIT_LEAF_MAX = 0.5;
+        static constexpr double INIT_LEAF_MAX = 0.6;
         static uint64_t make_edge_tuple(uint32_t from, uint32_t to);
         static pair<uint32_t, uint32_t> get_edge_tuple(uint64_t edge);
         uint32_t target_rank(uint32_t from, uint32_t to);
@@ -60,6 +60,8 @@ class DistPCSR {
         bool redistributing;
         upcxx::global_ptr<int64_t> redis_lock; 
         upcxx::atomic_domain<int64_t> ad;
+
+        int outstanding_rpcs;
 };
 
 std::ostream& operator<<(std::ostream& _os, const range_t& _p) {
@@ -76,7 +78,7 @@ std::ostream& operator<<(std::ostream& _os, const range_t& _p) {
     return _os;
 }
 
-upcxx::future<> insert_edge(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to);
+void insert_edge(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to);
 upcxx::future<bool> query_edge(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to);
 uint32_t redis_count(
     upcxx::dist_object<DistPCSR>& pcsr, 
@@ -114,6 +116,7 @@ DistPCSR::DistPCSR(uint32_t size, uint64_t max_val) : spma(SetPMA(size, INIT_LEA
         cached_ranges.push_back(make_tuple(0, lower_tup, upper_tup));
     }
 
+    outstanding_rpcs = 0;
     redistributing = false;
     if (upcxx::rank_me() == 0) {
         redis_lock = upcxx::new_<int64_t>(0);
@@ -178,21 +181,19 @@ uint32_t DistPCSR::target_rank(uint32_t from, uint32_t to) {
     return index;
 }
 
-upcxx::future<> flush_queue(upcxx::dist_object<DistPCSR>& pcsr) {
-    upcxx::future<> all_flushed = upcxx::make_future();
+void flush_queue(upcxx::dist_object<DistPCSR>& pcsr) {
     while (pcsr->rq_queue.size() != 0 && !pcsr->redistributing) {
         auto insert = pcsr->rq_queue.front();
         pcsr->rq_queue.pop_front();
-        all_flushed = upcxx::when_all(all_flushed, pcsr->insert_edge_local(pcsr, insert.from, insert.to));        
+        pcsr->insert_edge_local(pcsr, insert.from, insert.to);        
     }
-    return all_flushed;
 }
 
-upcxx::future<> DistPCSR::insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to) {
+void DistPCSR::insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to) {
     // forwarding
     if (target_rank(from, to) != upcxx::rank_me()) {
         cout << "forwarding edge " << from << " " << to << " from " << upcxx::rank_me() << " to " << target_rank(from, to) << timestamp_endl;
-        return insert_edge(pcsr, from, to);
+        insert_edge(pcsr, from, to);
     }
     else {
         uint64_t edge = make_edge_tuple(from, to);
@@ -200,22 +201,26 @@ upcxx::future<> DistPCSR::insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, 
         if (spma._num_elements > (uint32_t) (spma._leaf_max * spma.size())) {
             redistribute(pcsr);
         }
-        return upcxx::make_future();
     }
 }
 
-upcxx::future<> insert_edge(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to) {
+void insert_edge(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to) {
     uint32_t rank = pcsr->target_rank(from, to);
     if (rank == upcxx::rank_me()) {
         pcsr->rq_queue.push_back(Insert(from, to));
-        return upcxx::make_future();
+        return;
     }
     
-    return upcxx::rpc(rank,
+    pcsr->outstanding_rpcs += 1;
+    upcxx::rpc(rank,
         [](upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to) {
-            return insert_edge(pcsr, from, to);
+            insert_edge(pcsr, from, to);
         },
         pcsr, from, to
+    ).then(
+        [&pcsr]() {
+            pcsr->outstanding_rpcs -= 1;
+        }
     );
 }
 
@@ -228,7 +233,9 @@ upcxx::future<bool> query_edge(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from
     uint32_t rank = pcsr->target_rank(from, to);
     if (pcsr->redistributing) {
         cout << "why are we query edge during redistribute" << timestamp_endl;
-        cout << "sending rpc to rank " << rank << timestamp_endl; 
+        cout << from << " " << to << timestamp_endl;
+        cout << "sending rpc to rank " << rank << " from " << upcxx::rank_me() << timestamp_endl;
+        exit(-1);
     }
     if (rank == upcxx::rank_me()) {
         bool result = pcsr->query_edge(from, to);
@@ -387,7 +394,8 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
     uint32_t start_proc = upcxx::rank_me();
     element_counts[start_proc] = total_elements;
     // need a buffer of at least 1 in each processor (arguably probably more)
-    while (total_elements > (uint32_t) (pcsr->spma._leaf_max * n_procs * pcsr->size()) && (n_procs < upcxx::rank_n())) {
+    int level = 0;
+    while (total_elements > (uint32_t) ((pcsr->spma._leaf_max - level * 0.01) * n_procs * pcsr->size()) && (n_procs < upcxx::rank_n())) {
         n_procs *= 2;
         redistribute_log << "expanding redistribute to " << n_procs << " ranks" << timestamp_endl;
         uint32_t new_proc = (start_proc / n_procs) * n_procs;
@@ -397,9 +405,10 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
             total_elements += redis_count(pcsr, new_proc + n_procs / 2, n_procs / 2, element_counts);
         }
         start_proc = new_proc;
+        level += 1;
     }
     
-    if (n_procs == upcxx::rank_n() && total_elements >= (uint32_t) (pcsr->spma._leaf_max * n_procs * pcsr->size())) {
+    if (n_procs == upcxx::rank_n() && total_elements >= (uint32_t) ((pcsr->spma._leaf_max - level * 0.01) * n_procs * pcsr->size())) {
         cerr << "total elements " << total_elements << timestamp_endl;
         cerr << "total capacity " << (uint32_t) (pcsr->spma._leaf_max * n_procs * pcsr->size()) << timestamp_endl;
         cerr << "PMA too full" << timestamp_endl;
