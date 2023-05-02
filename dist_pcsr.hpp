@@ -28,6 +28,7 @@ struct Insert {
     Insert(uint32_t from, uint32_t to) : from(from), to(to) {}
 };
 typedef tuple<uint32_t, uint64_t, uint64_t> range_t;
+const int BATCH_SIZE = 512;
 class DistPCSR {
     public:
         DistPCSR(uint32_t size, uint64_t max_val);
@@ -62,6 +63,8 @@ class DistPCSR {
         upcxx::atomic_domain<int64_t> ad;
 
         int outstanding_rpcs;
+
+        vector<vector<Insert>> batches;
 };
 
 std::ostream& operator<<(std::ostream& _os, const range_t& _p) {
@@ -79,6 +82,7 @@ std::ostream& operator<<(std::ostream& _os, const range_t& _p) {
 }
 
 void insert_edge(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to);
+void insert_edge_batched(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to);
 upcxx::future<bool> query_edge(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to);
 uint32_t redis_count(
     upcxx::dist_object<DistPCSR>& pcsr, 
@@ -129,21 +133,22 @@ DistPCSR::DistPCSR(uint32_t size, uint64_t max_val) : spma(SetPMA(size, INIT_LEA
     }
     reference_time = upcxx::broadcast(reference_time, 0).wait();
 
-    redistribute_log.open("redistribute_" + std::to_string(upcxx::rank_me()) + ".txt");
+    batches.resize(upcxx::rank_n());
+    for (auto& insert_vec : batches) {
+        insert_vec.reserve(BATCH_SIZE);
+    }
+
+    // redistribute_log.open("redistribute_" + std::to_string(upcxx::rank_me()) + ".txt");
 }
 
 void DistPCSR::acquire_redis_lock() {
-    
     while (ad.compare_exchange(redis_lock, 0, 1, std::memory_order_seq_cst).wait()) {
         upcxx::progress();
     };
-    
 }
 
 void DistPCSR::release_redis_lock() {
-    
     ad.store(redis_lock, 0, std::memory_order_seq_cst).wait();
-    
 }
 
 uint64_t DistPCSR::make_edge_tuple(uint32_t from, uint32_t to) { return (((uint64_t) from) << 32) | to; }
@@ -192,7 +197,7 @@ void flush_queue(upcxx::dist_object<DistPCSR>& pcsr) {
 void DistPCSR::insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to) {
     // forwarding
     if (target_rank(from, to) != upcxx::rank_me()) {
-        cout << "forwarding edge " << from << " " << to << " from " << upcxx::rank_me() << " to " << target_rank(from, to) << timestamp_endl;
+        // cout << "forwarding edge " << from << " " << to << " from " << upcxx::rank_me() << " to " << target_rank(from, to) << timestamp_endl;
         insert_edge(pcsr, from, to);
     }
     else {
@@ -201,6 +206,41 @@ void DistPCSR::insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t fr
         if (spma._num_elements > (uint32_t) (spma._leaf_max * spma.size())) {
             redistribute(pcsr);
         }
+    }
+}
+
+void insert_edge_batch(upcxx::dist_object<DistPCSR>& pcsr, uint32_t target_rank, const vector<Insert>& edge_batch) {
+    pcsr->outstanding_rpcs += 1;
+    upcxx::rpc(
+        target_rank,
+        [](upcxx::dist_object<DistPCSR>& pcsr, const vector<Insert>& edge_batch) {
+            pcsr->rq_queue.insert(pcsr->rq_queue.end(), edge_batch.begin(), edge_batch.end());
+            cout << "received edge batch" << endl;
+        },
+        pcsr, edge_batch
+    ).then(
+        [&pcsr]() {
+            pcsr->outstanding_rpcs -= 1;
+        }
+    );
+}
+
+void insert_edge_batched(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to) {
+    uint32_t rank = pcsr->target_rank(from, to);
+    pcsr->batches[rank].push_back(Insert(from, to));
+    if (pcsr->batches[rank].size() >= BATCH_SIZE) {
+        insert_edge_batch(pcsr, rank, pcsr->batches[rank]);
+        pcsr->batches[rank].clear();
+    }
+}
+
+void clear_batch_buffers(upcxx::dist_object<DistPCSR>& pcsr) {
+    for (int rank = 0; rank < pcsr->batches.size(); rank += 1) {
+        if (pcsr->batches[rank].size() == 0) {
+            continue;
+        }
+        insert_edge_batch(pcsr, rank, pcsr->batches[rank]);
+        pcsr->batches[rank].clear();
     }
 }
 
@@ -276,7 +316,7 @@ uint32_t redis_count(
             start_proc + i,
             [](upcxx::dist_object<DistPCSR>& pcsr) {
                 pcsr->redistributing = true;
-                pcsr->spma.print_pma(redistribute_log);
+                // pcsr->spma.print_pma(redistribute_log);
                 return make_pair(pcsr->spma._num_elements, upcxx::rank_me());
             },
             pcsr
@@ -477,7 +517,7 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
                 }
             }
             pcsr->spma.swap_data(temp);
-            pcsr->spma.print_pma(redistribute_log);
+            // pcsr->spma.print_pma(redistribute_log);
             if (upcxx::rank_me() != root_p) { // team leader will set their own redistributing flag to false later
                 pcsr->redistributing = false;
             }
@@ -536,7 +576,7 @@ void DistPCSR::print_dist_pcsr() {
     ss << "]";
     outfile << ss.str() << timestamp_endl;
     outfile.close();
-    redistribute_log.close();
+    // redistribute_log.close();
 }
 
 vector<uint32_t> DistPCSR::edges_local(uint32_t from) {
