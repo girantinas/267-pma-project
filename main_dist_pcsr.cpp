@@ -16,29 +16,33 @@
 // #include "butil.hpp"
 
 using namespace std;
-
+vector<int> bfs_serial(DistPCSR &pcsr, uint32_t source);
 vector<int> bfs(DistPCSR &pcsr, uint32_t source);
 vector<double> pagerank(DistPCSR &pcsr);
 
 int main(int argc, char** argv) {
     upcxx::init();
+    int num_files = 16;
+    int ranks_per_file = upcxx::rank_n() / num_files; // Make sure both of these are a power of 2.
+    // cout << "Checkpoint 1" << endl;
     ifstream infile;
     ofstream outfile;
-    
     if (argc < 2) {
         infile.open("dist_pcsr_inserts.txt");
         if (!infile.is_open()) {
             cerr << "Couldn't open pcsr_inserts.txt" << endl;
             return -1;
         }
+    // cout << "Checkpoint 2" << endl;
     } else {
-        infile.open(argv[1]);
+        // infile.open(argv[1]);
+        infile.open(std::string(argv[1]) + "-" + std::to_string(upcxx::rank_me() / ranks_per_file) + ".txt");
         if (!infile.is_open()) {
-            cerr << "Couldn't open " << argv[1] << endl;
+            cerr << "Couldn't open " << std::string(argv[1]) + "-" + std::to_string(upcxx::rank_me() / ranks_per_file) + ".txt" << endl;
             return -1;
         }
     }
-
+    // cout << "Checkpoint 3" << endl;
     if (argc >= 3) {
         outfile.open(std::string(argv[2]) + "_" + std::to_string(upcxx::rank_me()) + ".dat");
         if (!outfile.is_open()) {
@@ -48,137 +52,99 @@ int main(int argc, char** argv) {
     }
 
     bool write_output = outfile.is_open();
-
+    // cout << "Checkpoint 4" << endl;
     string line;
 
-    DistPCSR pcsr(1 << 4, 2048);
+    DistPCSR pcsr(1 << 27, (1 << 24) + 1000);
     int line_number = 0;
 
+    // cout << "Checkpoint 5" << endl;
     chrono::high_resolution_clock::time_point start_time, end_time;
-    std::chrono::duration<double> insert_duration(0), query_duration(0);
+    std::chrono::duration<double> insert_duration(0), query_duration(0), bfs_duration(0), pagerank_duration(0);
 
     while (getline(infile, line)) {
+        if (line_number % 10000 == 0 && upcxx::rank_me() == 0) {
+            double insert_time = std::chrono::duration<double>(insert_duration).count();
+            double bfs_time = std::chrono::duration<double>(bfs_duration).count();
+            cout << "Processed " << line_number << " lines.\nTotal insert duration so far: " << insert_time << "\nTotal BFS duration so far: " << bfs_time << endl;
+        }
         istringstream iss(line);
         string command;
         iss >> command;
-        if (command == "START_INSERTS") {
-            if (line_number != 0) {
-                end_time = std::chrono::high_resolution_clock::now();
-                query_duration += end_time - start_time;
+        if (line_number % ranks_per_file != upcxx::rank_me()) {
+            if (command == "BFS") {
+                upcxx::barrier();
+                upcxx::barrier();
             }
-            start_time = std::chrono::high_resolution_clock::now();
-            upcxx::barrier();
-            line_number++;
-            continue;
-        } else if (command == "START_QUERIES") {
-            if (line_number != 0) {
-                end_time = std::chrono::high_resolution_clock::now();
-                insert_duration += end_time - start_time;
-            }
-            start_time = std::chrono::high_resolution_clock::now();
-            upcxx::barrier();
             line_number++;
             continue;
         }
-        if (line_number % upcxx::rank_n() != upcxx::rank_me()) {
-            line_number++;
-            continue;
-        }
-        if (command == "PUT_EDGE") {
-            uint32_t u, v;
-            iss >> u >> v;
-            pcsr.insert_edge(u, v);
-        } else if (command == "QUERY_EDGE") {
-            uint32_t u, v;
-            iss >> u >> v;
-            bool exists = pcsr.query_edge(u, v);
-            if (exists) {
-                outfile << u << " " << v << " True" << endl;
-            } else {
-                outfile << u << " " << v << " False" << endl;
-            }
-        } else if (command == "GET_OUT_EDGES") {
+        if (command == "BFS") {
+            if (upcxx::rank_me() == 0) cout << "Before barrier 1" << endl;
+            upcxx::barrier();
+            if (upcxx::rank_me() == 0) cout << "After barrier 1" << endl;
             uint32_t vertex;
             iss >> vertex;
-            vector<uint32_t> out_edges = pcsr.edges(vertex);
-            if (write_output) {
-                if (out_edges.empty()) {
-                    outfile << "V: " << vertex << ", E: ";
-                } else {
-                    outfile << "V: " << vertex << ", E:";
-                    for (uint32_t dest_vertex : out_edges) {
-                        outfile << " " << dest_vertex;
-                    }
-                }
-                outfile << endl;
-            }
-        } else if (command == "QUERY_ALL_GRAPH") {
-            vector<pair<uint32_t, vector<uint32_t>>> result = pcsr.adjacency_lists();
-            if (write_output) {
-                for (auto& entry : result) {
-                    uint32_t& vertex = entry.first;
-                    outfile << "V: " << vertex << ", E:";
-                    for (int dest_vertex : entry.second) {
-                        outfile << " " << dest_vertex;
-                    }
-                    outfile << endl;
-                }
-            }
-        // } else if (command == "BFS") {
-        //     uint32_t vertex;
-        //     iss >> vertex;
-        //     vector<int> distances = bfs_serial(pcsr, vertex);
+            start_time = std::chrono::high_resolution_clock::now();
+            vector<int> distances = bfs_serial(pcsr, vertex);
+            end_time = std::chrono::high_resolution_clock::now();
+            bfs_duration += end_time - start_time;
+            if (upcxx::rank_me() == 0) cout << "Before barrier 2" << endl;
+            upcxx::barrier();
+            if (upcxx::rank_me() == 0) cout << "After barrier 2" << endl;
         } else {
-            cerr << "Received unsupported command: " << command << endl;
+            uint64_t edge = stoull(command);
+            uint32_t u, v;
+            tie(u, v) = DistPCSR::get_edge_tuple(edge);
+            start_time = std::chrono::high_resolution_clock::now();
+            // cout << "Inserting edge " << u << " " << v << endl;
+            pcsr.insert_edge(u, v);
+            end_time = std::chrono::high_resolution_clock::now();
+            insert_duration += end_time - start_time;
         }
         line_number++;
     }
-    end_time = std::chrono::high_resolution_clock::now();
-    query_duration += end_time - start_time;
+    double insert_time = std::chrono::duration<double>(insert_duration).count();
+    double query_time = std::chrono::duration<double>(query_duration).count();
+    double bfs_time = std::chrono::duration<double>(bfs_duration).count();
+    double pagerank_time = std::chrono::duration<double>(pagerank_duration).count();
     upcxx::barrier();
+    
     if (upcxx::rank_me() == 0) {
-        cout << "Inserts total time: " << std::chrono::duration<double>(insert_duration).count() << endl;
-        cout << "Queries total time: " << std::chrono::duration<double>(query_duration).count() << endl;
+        cout << "Inserts total time: " << upcxx::reduce_all(insert_time, upcxx::op_fast_add).wait() / upcxx::rank_n() << endl;
+        cout << "Queries total time: " << upcxx::reduce_all(query_time, upcxx::op_fast_add).wait() / upcxx::rank_n() << endl;
+        cout << "BFS total time: " << upcxx::reduce_all(bfs_time, upcxx::op_fast_add).wait() / upcxx::rank_n() << endl;
+        cout << "PageRank total time: " << upcxx::reduce_all(pagerank_time, upcxx::op_fast_add).wait() / upcxx::rank_n() << endl;
     }
     infile.close();
     outfile.close();
-    upcxx::barrier();
-    start_time = std::chrono::high_resolution_clock::now();
-    vector<int> distances = bfs(pcsr, 0);
-    upcxx::barrier();
-    end_time = std::chrono::high_resolution_clock::now();
-    if (upcxx::rank_me() == 0) {
-        cout << "BFS total time: " << std::chrono::duration<double>(end_time - start_time).count() << endl;
-    }
-    if (write_output) {
-        outfile.open(std::string(argv[2]) + "_" + std::to_string(upcxx::rank_me()) + ".bfs");
-        uint32_t start_vertex = pcsr.num_vertices / upcxx::rank_n() * upcxx::rank_me();
-        for (uint32_t i = 0; i < distances.size(); i++) {
-            uint32_t vertex = start_vertex + i;
-            outfile << vertex << " " << distances[i] << endl;
-        }
-        outfile.close();
-    }
 
-    upcxx::barrier();
-    start_time = std::chrono::high_resolution_clock::now();
-    vector<double> pr_values = pagerank(pcsr);
-    upcxx::barrier();
-    end_time = std::chrono::high_resolution_clock::now();
-    if (upcxx::rank_me() == 0) {
-        cout << "PageRank total time: " << std::chrono::duration<double>(end_time - start_time).count() << endl;
-    }
-    if (write_output) {
-        outfile.open(std::string(argv[2]) + "_" + std::to_string(upcxx::rank_me()) + ".pr");
-        uint32_t start_vertex = pcsr.num_vertices / upcxx::rank_n() * upcxx::rank_me();
-        for (uint32_t i = 0; i < pr_values.size(); i++) {
-            uint32_t vertex = start_vertex + i;
-            outfile << vertex << " " << pr_values[i] << endl;
-        }
-        outfile.close();
-    }
     upcxx::finalize();
     return 0;
+}
+
+vector<int> bfs_serial(DistPCSR &pcsr, uint32_t source) {
+    if (upcxx::rank_me() == 0) cout << "BFS Start" << endl;
+    vector<int> distances(pcsr.num_vertices, -1);
+    deque<uint32_t> queue;
+
+    distances[source] = 0;
+    queue.push_back(source);
+
+    while (!queue.empty()) {
+        uint32_t current = queue.front();
+        queue.pop_front();
+
+        vector<uint32_t> neighbors = pcsr.edges(current);
+        for (uint32_t neighbor : neighbors) {
+            if (distances[neighbor] == -1) {
+                distances[neighbor] = distances[current] + 1;
+                queue.push_back(neighbor);
+            }
+        }
+    }
+    if (upcxx::rank_me() == 0) cout << "BFS Finish" << endl;
+    return distances;
 }
 
 vector<int> bfs(DistPCSR &pcsr, uint32_t source) {

@@ -7,7 +7,7 @@ export GASNET_OFI_RECEIVE_BUFF_SIZE=single
 rm test*.dat
 rm test*.bfs
 rm test*.pr
-salloc -N 2 -A mp309 -t 10:00 -q debug --qos=interactive -C cpu srun -N 2 -n 64 ./main_dist_pcsr ../tests/dist_pcsr_inserts_speed.txt #test
+salloc -N 4 -A mp309 -t 60:00 -q debug --qos=interactive -C cpu srun -N 4 -n 256 ./main_dist_pcsr ../tests/rmat-tests/tests/rmat-inserts >> log.txt #test
 rm ../tests/dist_pcsr_outserts.txt
 rm ../tests/dist_pcsr_bfs_outserts.txt
 rm ../tests/dist_pcsr_pr_outserts.txt
