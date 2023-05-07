@@ -74,7 +74,7 @@ int main(int argc, char** argv) {
     ifstream infile;
     int num_files = 16;
     int ranks_per_file = upcxx::rank_n() / num_files; // Make sure both of these are a power of 2.
-    infile.open("../lj-tests/LiveJournal-inserts-" + std::to_string(upcxx::rank_me() / ranks_per_file) + ".txt");
+    infile.open("../rmat-tests/rmat-inserts-" + std::to_string(upcxx::rank_me() / ranks_per_file) + ".txt");
     if (!infile.is_open()) {
         cerr << "Couldn't open LiveJournal files" << endl;
         return -1;
@@ -232,5 +232,30 @@ vector<int> bfs(DistPCSR &pcsr, uint32_t source) {
         level++;
     }
     return local_distances;
+}
+*/
+/*
+vector<int> bfs_serial(DistPCSR &pcsr, uint32_t source) {
+    if (upcxx::rank_me() == 0) cout << "BFS Start" << endl;
+    vector<int> distances(pcsr.num_vertices, -1);
+    deque<uint32_t> queue;
+
+    distances[source] = 0;
+    queue.push_back(source);
+
+    while (!queue.empty()) {
+        uint32_t current = queue.front();
+        queue.pop_front();
+
+        vector<uint32_t> neighbors = pcsr.edges(current).wait();
+        for (uint32_t neighbor : neighbors) {
+            if (distances[neighbor] == -1) {
+                distances[neighbor] = distances[current] + 1;
+                queue.push_back(neighbor);
+            }
+        }
+    }
+    if (upcxx::rank_me() == 0) cout << "BFS Finish" << endl;
+    return distances;
 }
 */

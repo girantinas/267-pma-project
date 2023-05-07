@@ -1,0 +1,1 @@
+g++ -std=c++17 -O3 main_setpma.cpp && ./a.out ./tests/setpma_benchmark_inserts_big.txt ./tests/setpma_benchmark_outserts.txt

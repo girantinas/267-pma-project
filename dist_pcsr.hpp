@@ -606,12 +606,11 @@ upcxx::future<> edges(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, vector<
     uint32_t end_rank = pcsr->target_rank(from, UINT32_MAX);
 
     upcxx::future<> finish_future = upcxx::make_future();
-    for (int rank = begin_rank; rank < end_rank + 1; ++rank) {
+    for (int rank = begin_rank; rank <= end_rank; ++rank) {
         if (rank == upcxx::rank_me()) {
-            auto f = upcxx::make_future(pcsr->edges_local(from)).then([&dest](vector<uint32_t> v) {
-                dest.insert(dest.end(), v.begin(), v.end());
-            });
-            finish_future = upcxx::when_all(f, finish_future);
+            for (uint32_t v : pcsr->edges_local(from)) {
+                dest.push_back(v);
+            };
         } else {
             auto f = upcxx::rpc(rank, 
                 [from](upcxx::dist_object<DistPCSR>& local_pcsr) {
