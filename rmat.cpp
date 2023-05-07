@@ -73,18 +73,17 @@ void edgeRmat(uint32_t logn, uint64_t m, uint32_t seed,
 		   float a, float b, float c) {
   uint32_t nn = (1 << logn);
   rMat g(nn, seed, a, b, c);
-  ofstream outfile;
-  outfile.open("tests/rmat-inserts.txt");
-  if (!outfile.is_open()) {
-      cerr << "Couldn't open outfile" << endl;
-      exit(-1);
-  }  
-  
   #pragma omp parallel
   {
     uint32_t bfs_vertex;
     int thread_num = omp_get_thread_num();
     int total_threads = omp_get_num_threads();
+    ofstream outfile;
+    outfile.open(std::format("tests/rmat-inserts-{}.txt", thread_num));
+    if (!outfile.is_open()) {
+      cerr << "Couldn't open outfile" << endl;
+      exit(-1);
+    }
 
     for (uint64_t i = 0; i < m / total_threads; i++) {
       uint64_t edge = g(i + (m / total_threads) * thread_num);
@@ -94,6 +93,10 @@ void edgeRmat(uint32_t logn, uint64_t m, uint32_t seed,
         bfs_vertex = get_edge_tuple(edge).first;
       } else if (i % 10000 == 10000 - 1) {
         outfile << "BFS " << bfs_vertex << endl;
+      }
+
+      if (i % 10000000 == 10000000 - 1) {
+        cout << "thread " << thread_num << " is 1/3 done" << endl;
       }
     }
   }
