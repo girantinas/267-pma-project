@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
     
     string line;
 
-    SetPMA pma(1 << 4);
+    SetPMA pma(1 << 22);
     int num_range_queries = 1;
 
     while (getline(infile, line)) {

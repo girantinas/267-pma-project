@@ -22,6 +22,35 @@ vector<double> pagerank(DistPCSR &pcsr);
 
 int main(int argc, char** argv) {
     upcxx::init();
+    if (upcxx::rank_me() == 0) {
+        unordered_set<bool> edges;
+        ifstream infile;
+        string line;
+        uint32_t num_dupes = 0;
+        for (int i = 0; i < 16; i++) {
+            infile.open(std::string(argv[1]) + "-" + std::to_string(i) + ".txt");
+            while (getline(infile, line)) {
+                istringstream iss(line);
+                string command;
+                iss >> command;
+                if (command == "BFS") {
+                } else {
+                    uint64_t edge = stoull(command);
+                    if (edges.find(edge) != edges.end()) {
+                        num_dupes++;
+                    } else {
+                        edges.insert(edge);
+                    }
+                }
+            }
+        }
+        cout << "Num dupes in insert files: " << num_dupes << endl;
+    }
+    upcxx::finalize();
+}
+
+int main_2(int argc, char** argv) {
+    upcxx::init();
     int num_files = 16;
     int ranks_per_file = upcxx::rank_n() / num_files; // Make sure both of these are a power of 2.
     // cout << "Checkpoint 1" << endl;
@@ -54,9 +83,11 @@ int main(int argc, char** argv) {
     bool write_output = outfile.is_open();
     // cout << "Checkpoint 4" << endl;
     string line;
-
+    int num_edges = 1 << 29;
     DistPCSR pcsr(1 << 27, (1 << 24) + 1000);
+    // DistPCSR pcsr(num_edges / upcxx::rank_n() * 4, (1 << 24) + 1000);
     int line_number = 0;
+    int total_inserts = 0;
 
     // cout << "Checkpoint 5" << endl;
     chrono::high_resolution_clock::time_point start_time, end_time;
@@ -66,33 +97,40 @@ int main(int argc, char** argv) {
         if (line_number % 10000 == 0 && upcxx::rank_me() == 0) {
             double insert_time = std::chrono::duration<double>(insert_duration).count();
             double bfs_time = std::chrono::duration<double>(bfs_duration).count();
-            cout << "Processed " << line_number << " lines.\nTotal insert duration so far: " << insert_time << "\nTotal BFS duration so far: " << bfs_time << endl;
+            cout << "Processed " << line_number << " lines.\nTotal insert duration so far: " << insert_time << "\nTotal BFS duration so far: " << bfs_time << "\n Inserts completed: " << total_inserts << endl;
         }
         istringstream iss(line);
         string command;
         iss >> command;
-        if (line_number % ranks_per_file != upcxx::rank_me()) {
+        if (line_number % ranks_per_file != upcxx::rank_me() % ranks_per_file) {
+        // if (line_number % upcxx::rank_n() != upcxx::rank_me()) {
             if (command == "BFS") {
-                upcxx::barrier();
-                upcxx::barrier();
+                // upcxx::barrier();
+                // upcxx::barrier();
             }
             line_number++;
             continue;
         }
         if (command == "BFS") {
-            if (upcxx::rank_me() == 0) cout << "Before barrier 1" << endl;
-            upcxx::barrier();
-            if (upcxx::rank_me() == 0) cout << "After barrier 1" << endl;
-            uint32_t vertex;
-            iss >> vertex;
-            start_time = std::chrono::high_resolution_clock::now();
-            vector<int> distances = bfs_serial(pcsr, vertex);
-            end_time = std::chrono::high_resolution_clock::now();
-            bfs_duration += end_time - start_time;
-            if (upcxx::rank_me() == 0) cout << "Before barrier 2" << endl;
-            upcxx::barrier();
-            if (upcxx::rank_me() == 0) cout << "After barrier 2" << endl;
+            // if (upcxx::rank_me() == 0) cout << "Before barrier 1" << endl;
+            // upcxx::barrier();
+            // if (upcxx::rank_me() == 0) cout << "After barrier 1" << endl;
+            // uint32_t vertex;
+            // iss >> vertex;
+            // start_time = std::chrono::high_resolution_clock::now();
+            // vector<int> distances = bfs_serial(pcsr, vertex);
+            // end_time = std::chrono::high_resolution_clock::now();
+            // bfs_duration += end_time - start_time;
+            // if (upcxx::rank_me() == 0) cout << "Before barrier 2" << endl;
+            // upcxx::barrier();
+            // if (upcxx::rank_me() == 0) cout << "After barrier 2" << endl;
+        } else if (command == "PUT_EDGE") {
+            total_inserts++;
+            uint32_t u, v;
+            iss >> u >> v;
+            pcsr.insert_edge(u, v);
         } else {
+            total_inserts++;
             uint64_t edge = stoull(command);
             uint32_t u, v;
             tie(u, v) = DistPCSR::get_edge_tuple(edge);
@@ -108,17 +146,30 @@ int main(int argc, char** argv) {
     double query_time = std::chrono::duration<double>(query_duration).count();
     double bfs_time = std::chrono::duration<double>(bfs_duration).count();
     double pagerank_time = std::chrono::duration<double>(pagerank_duration).count();
+    uint32_t num_elements = pcsr.num_elements();
     upcxx::barrier();
     
+
     if (upcxx::rank_me() == 0) {
-        cout << "Inserts total time: " << upcxx::reduce_all(insert_time, upcxx::op_fast_add).wait() / upcxx::rank_n() << endl;
-        cout << "Queries total time: " << upcxx::reduce_all(query_time, upcxx::op_fast_add).wait() / upcxx::rank_n() << endl;
-        cout << "BFS total time: " << upcxx::reduce_all(bfs_time, upcxx::op_fast_add).wait() / upcxx::rank_n() << endl;
-        cout << "PageRank total time: " << upcxx::reduce_all(pagerank_time, upcxx::op_fast_add).wait() / upcxx::rank_n() << endl;
+        double insert_time = std::chrono::duration<double>(insert_duration).count();
+        double bfs_time = std::chrono::duration<double>(bfs_duration).count();
+        cout << "Processed " << line_number << " lines.\nTotal insert duration so far: " << insert_time << "\nTotal BFS duration so far: " << bfs_time << "\n Inserts completed: " << total_inserts << endl;
+    }
+
+    uint32_t total_num_inserts = upcxx::reduce_one(total_inserts, upcxx::op_fast_add, 0).wait();
+    uint32_t total_num_elements = upcxx::reduce_one(num_elements, upcxx::op_fast_add, 0).wait();
+    if (upcxx::rank_me() == 0) {
+        cout << "pma total inserts: " << total_num_inserts << endl; 
+        cout << "pma total elements: " << total_num_elements << endl; 
+        // cout << "Inserts total time: " << upcxx::reduce_all(insert_time, upcxx::op_fast_add).wait() / upcxx::rank_n() << endl;
+        // cout << "Queries total time: " << upcxx::reduce_all(query_time, upcxx::op_fast_add).wait() / upcxx::rank_n() << endl;
+        // cout << "BFS total time: " << upcxx::reduce_all(bfs_time, upcxx::op_fast_add).wait() / upcxx::rank_n() << endl;
+        // cout << "PageRank total time: " << upcxx::reduce_all(pagerank_time, upcxx::op_fast_add).wait() / upcxx::rank_n() << endl;
     }
     infile.close();
     outfile.close();
-
+    cout << "Rank " << upcxx::rank_me() << " finished" << endl;
+    upcxx::barrier();
     upcxx::finalize();
     return 0;
 }

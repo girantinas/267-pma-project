@@ -31,7 +31,7 @@ class DistPCSR {
         /* Returns the entire adjacency list representation of the graph. */
         vector<pair<uint32_t, vector<uint32_t>>> adjacency_lists();
         // deque<Insert> rq_queue;
-
+        uint32_t num_elements();
         static uint64_t make_edge_tuple(uint32_t from, uint32_t to);
         static pair<uint32_t, uint32_t> get_edge_tuple(uint64_t edge);
         uint32_t target_rank(uint32_t from);
@@ -49,6 +49,10 @@ pair<uint32_t, uint32_t> DistPCSR::get_edge_tuple(uint64_t edge) { return std::m
 
 uint32_t DistPCSR::target_rank(uint32_t from) {
     return from / (num_vertices / upcxx::rank_n());
+}
+
+uint32_t DistPCSR::num_elements() {
+    return dist_spma->_num_elements;
 }
 
 void DistPCSR::insert_edge(uint32_t from, uint32_t to) {
