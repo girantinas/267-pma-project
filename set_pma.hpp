@@ -51,6 +51,8 @@ class SetPMA {
         void print_pma(ostream& stream = cout);
         uint32_t _num_elements;
         bool _resize_allowed;
+        uint32_t _max_index;
+        vector<uint64_t> _temp;
 };
 
 SetPMA::SetPMA(uint32_t size) {
@@ -58,6 +60,7 @@ SetPMA::SetPMA(uint32_t size) {
     _size = size;
     _num_elements = 0;
     _resize_allowed = true;
+    _max_index = INVALID_IDX;
 }
 
 SetPMA::SetPMA(uint32_t size, double leaf_max) {
@@ -66,6 +69,7 @@ SetPMA::SetPMA(uint32_t size, double leaf_max) {
     _num_elements = 0;
     _leaf_max = leaf_max;
     _resize_allowed = true;
+    _max_index = INVALID_IDX;
 }
 
 SetPMA::SetPMA(uint32_t size, double leaf_max, bool resize_allowed) {
@@ -74,6 +78,7 @@ SetPMA::SetPMA(uint32_t size, double leaf_max, bool resize_allowed) {
     _num_elements = 0;
     _leaf_max = leaf_max;
     _resize_allowed = resize_allowed;
+    _max_index = INVALID_IDX;
 }
 
 // Gets the range [left-th minimum, right-th minimum)
@@ -140,9 +145,13 @@ uint32_t SetPMA::num_leaves() { return _size / logN(); }
 uint32_t SetPMA::depth() { return MSSB(num_leaves()); }
 uint32_t SetPMA::count_nonempty(uint32_t index, uint32_t len)  { 
     uint32_t full = 0;
-    for (uint32_t i = index; i < index + len; ++i) {
+    for (uint32_t i = index; i < index + len;) {
         if (data[i] != INT_NULL) {
             ++full;
+            i += 1;
+        }
+        else {
+            i = next_leaf(i);
         }
     }
     return full;
@@ -171,25 +180,10 @@ uint32_t SetPMA::search(uint64_t key) {
         return INVALID_IDX;
     }
     
-    uint64_t max_key = INT_NULL;
-    uint32_t argmax = 0;
-    if (data[high] != INT_NULL) {
-        for (uint32_t i = 0; i < logN(); i += 1) {
-            if (data[high + i] != INT_NULL) {
-                max_key = data[high + i];
-                argmax = high + i;
-            }
-        }
-    } else {
-        for (uint32_t i = _size - 1; i > 0; i--) {
-            if (data[i] != INT_NULL) {
-                max_key = data[i];
-                argmax = i;
-                high = leaf_index(argmax);
-                break;
-            }
-        }
-    }
+    uint32_t argmax = _max_index;
+    uint64_t max_key = data[argmax];
+    high = leaf_index(argmax);
+    
     if (key >= max_key) {
         return argmax;
     }
@@ -238,18 +232,39 @@ uint32_t SetPMA::search(uint64_t key) {
 }
 
 void SetPMA::slide_right(uint32_t index) {
-    for (uint32_t i = leaf_position(leaf_number(index) + 1) - 1; i > index; --i) {
-        data[i] = data[i - 1];
+    uint64_t right;
+    uint64_t left = data[index];
+    for (uint32_t i = index; i < leaf_position(leaf_number(index) + 1); i++) {
+        right = data[i + 1];
+        data[i + 1] = left;
+        left = right;
+        if (i == _max_index) {
+            _max_index = i + 1;
+        }
+        if (left == INT_NULL) {
+            break;
+        }
     }
+    // for (uint32_t i = leaf_position(leaf_number(index) + 1) - 1; i > index; --i) {
+    //     if (i - 1 == _max_index) {
+    //         _max_index = i;
+    //     }
+    //     data[i] = data[i - 1];
+    // }
 }
 
 void SetPMA::insert(uint64_t key) {
     // print_pma();
+    auto start = std::chrono::high_resolution_clock::now();
     uint32_t index = search(key);
+    auto search_end = std::chrono::high_resolution_clock::now();
     if (index != INVALID_IDX && data[index] == key) {
         return;
     }
     _num_elements += 1;
+    if (index == _max_index) {
+        _max_index = index + 1;
+    }
     index = index + 1;
 
     // always deposit on the left
@@ -266,8 +281,8 @@ void SetPMA::insert(uint64_t key) {
     uint32_t density_count = count_nonempty(node_index, len);
     // while density too high, go up the implicit tree
     // go up to the biggest node above the density bound
-
-    while (density_count > (uint32_t) (_leaf_max * len) && (len < _size)) {
+    int level = 0;
+    while (density_count > (uint32_t) ((_leaf_max - 0.01 * level) * len) && (len < _size)) {
         len *= 2;
         uint32_t new_node_index = (node_index / len) * len;
 
@@ -277,6 +292,7 @@ void SetPMA::insert(uint64_t key) {
             density_count += count_nonempty(new_node_index + len / 2, len / 2);
         }
         node_index = new_node_index;
+        level += 1;
     }
 
     if (len == _size && density_count > (uint32_t) (_leaf_max * len)) {
@@ -288,14 +304,20 @@ void SetPMA::insert(uint64_t key) {
     else if (len > logN()) {
         redistribute(node_index, len, density_count);
     }
+
+    auto other_end = std::chrono::high_resolution_clock::now();
+    // if (upcxx::rank_me() == 0) {
+    //     cout << "search: " << std::chrono::duration<double>(search_end - start).count() << endl;
+    //     cout << "other: " << std::chrono::duration<double>(other_end - search_end).count() << endl;
+    // }
 }
 
 void SetPMA::redistribute(uint32_t index, uint32_t len, uint32_t density_count) {
-    vector<uint64_t> temp;
-    temp.reserve(len); // t - s, t = index
+    _temp.reserve(len); // t - s, t = index
+    _temp.clear();
     for (uint32_t i = index; i < len + index; ++i) {
         if (data[i] != INT_NULL) {
-            temp.push_back(data[i]);
+            _temp.push_back(data[i]);
             data[i] = INT_NULL;
         }
     }
@@ -305,12 +327,21 @@ void SetPMA::redistribute(uint32_t index, uint32_t len, uint32_t density_count) 
     uint32_t x = 0;
     for (uint32_t leaf = 0; leaf < nl; ++leaf) {
         uint32_t num_elems_to_copy = elems_per_leaf + (leaf < density_count % nl);
-        memcpy(&data[index + leaf * logN()], &temp[x], num_elems_to_copy * sizeof(uint64_t));
+        memcpy(&data[index + leaf * logN()], &_temp[x], num_elems_to_copy * sizeof(uint64_t));
         x += num_elems_to_copy;
+        // if we are on final iteration and _max_index is within the redistribute, update _max_index
+        if (leaf == nl - 1 && _max_index >= index && _max_index < index + len) {
+            if (num_elems_to_copy == 0) {
+                cout << "???" << endl;
+                exit(-1);
+            }
+            _max_index = index + leaf * logN() + (num_elems_to_copy - 1);
+        }
     }
 }
 
 void SetPMA::resize() {
+    cout << "doing resize" << endl;
     _size *= 2;
     data.resize(_size, INT_NULL);
     redistribute(0, _size, _num_elements);

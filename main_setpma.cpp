@@ -44,9 +44,9 @@ int main(int argc, char** argv) {
     
     string line;
 
-    SetPMA pma(1 << 4);
+    SetPMA pma(1 << 22);
     int num_range_queries = 1;
-
+    int line_num = 0;
     while (getline(infile, line)) {
         istringstream iss(line);
         string command;
@@ -54,12 +54,12 @@ int main(int argc, char** argv) {
         if (command == "PUT") {
             uint64_t insert_num;
             iss >> insert_num;
-            cout << "put(" << insert_num << ")" << endl;
+            // cout << "put(" << insert_num << ")" << endl;
             pma.insert(insert_num);
         } else if (command == "RANGE_QUERY") {
             uint64_t range_start, range_end;
             iss >> range_start >> range_end;
-            cout << "range query(" << range_start << "," << range_end << ")" << ", number " << num_range_queries << endl;
+            // cout << "range query(" << range_start << "," << range_end << ")" << ", number " << num_range_queries << endl;
             uint64_t result = pma.range_sum(range_start, range_end);
             if (write_output) {
                 outfile << result << endl;
@@ -74,7 +74,13 @@ int main(int argc, char** argv) {
         } else {
             cerr << "Received unsupported command" << endl;
         }
+        
+        if (line_num % 100000 == 0 || line_num > 2700000 && line_num % 10000 == 0) {
+            cout << "line " << line_num << endl;
+        }
+        line_num += 1;
     }
+    cout << "done!" << endl;
     infile.close();
     outfile.close();
 

@@ -28,11 +28,12 @@ struct Insert {
     Insert(uint32_t from, uint32_t to) : from(from), to(to) {}
 };
 typedef tuple<uint32_t, uint64_t, uint64_t> range_t;
-const int BATCH_SIZE = 512;
+const int BATCH_SIZE = 4096;
 class DistPCSR {
     public:
         DistPCSR(uint32_t size, uint64_t max_val);
         uint32_t size();
+        uint32_t num_elements(); // number of nonempty elements in this rank's local PCSR
         uint32_t num_vertices; // Restrict this to power of 2
         /* Inserts an edge from one vertex to another. Fails if either vertex does not exist. */
         void insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to);
@@ -46,7 +47,7 @@ class DistPCSR {
         void print_dist_pcsr();
 
         deque<Insert> rq_queue;
-        static constexpr double INIT_LEAF_MAX = 0.6;
+        static constexpr double INIT_LEAF_MAX = 0.8;
         static uint64_t make_edge_tuple(uint32_t from, uint32_t to);
         static pair<uint32_t, uint32_t> get_edge_tuple(uint64_t edge);
         uint32_t target_rank(uint32_t from, uint32_t to);
@@ -104,6 +105,9 @@ uint32_t DistPCSR::size() {
     return spma.size();
 }
 
+uint32_t DistPCSR::num_elements() {
+    return spma._num_elements;
+}
 
 DistPCSR::DistPCSR(uint32_t size, uint64_t max_val) : spma(SetPMA(size, INIT_LEAF_MAX, false)) {
     num_vertices = max_val;
@@ -187,23 +191,32 @@ uint32_t DistPCSR::target_rank(uint32_t from, uint32_t to) {
 }
 
 void flush_queue(upcxx::dist_object<DistPCSR>& pcsr) {
+    if (upcxx::rank_me() == 0) {
+        // cout << "queue size " << pcsr->rq_queue.size() << endl;
+    }
     while (pcsr->rq_queue.size() != 0 && !pcsr->redistributing) {
         auto insert = pcsr->rq_queue.front();
         pcsr->rq_queue.pop_front();
-        pcsr->insert_edge_local(pcsr, insert.from, insert.to);        
+        pcsr->insert_edge_local(pcsr, insert.from, insert.to);
+        if (upcxx::rank_me() == 0) {
+            // cout << "queue size " << pcsr->rq_queue.size() << endl;
+        }     
     }
 }
 
 void DistPCSR::insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, uint32_t to) {
     // forwarding
     if (target_rank(from, to) != upcxx::rank_me()) {
-        // cout << "forwarding edge " << from << " " << to << " from " << upcxx::rank_me() << " to " << target_rank(from, to) << timestamp_endl;
+        if (upcxx::rank_me() == 0) {
+            // cout << "forwarding edge " << from << " " << to << " from " << upcxx::rank_me() << " to " << target_rank(from, to) << endl;
+        }
         insert_edge(pcsr, from, to);
     }
     else {
         uint64_t edge = make_edge_tuple(from, to);
         spma.insert(edge);
-        if (spma._num_elements > (uint32_t) (spma._leaf_max * spma.size())) {
+        if (spma._num_elements > (uint32_t) ((spma._leaf_max - spma.depth() * 0.01) * spma.size())) {
+            cout << "rank " << upcxx::rank_me() << " redistributing!" << endl;
             redistribute(pcsr);
         }
     }
@@ -215,7 +228,7 @@ void insert_edge_batch(upcxx::dist_object<DistPCSR>& pcsr, uint32_t target_rank,
         target_rank,
         [](upcxx::dist_object<DistPCSR>& pcsr, const vector<Insert>& edge_batch) {
             pcsr->rq_queue.insert(pcsr->rq_queue.end(), edge_batch.begin(), edge_batch.end());
-            cout << "received edge batch" << endl;
+            // cout << "received edge batch" << endl;
         },
         pcsr, edge_batch
     ).then(
@@ -435,7 +448,7 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
     element_counts[start_proc] = total_elements;
     // need a buffer of at least 1 in each processor (arguably probably more)
     int level = 0;
-    while (total_elements > (uint32_t) ((pcsr->spma._leaf_max - level * 0.01) * n_procs * pcsr->size()) && (n_procs < upcxx::rank_n())) {
+    while (total_elements > (uint32_t) ((pcsr->spma._leaf_max - pcsr->spma.depth() * 0.01 - level * 0.02) * n_procs * pcsr->size()) && (n_procs < upcxx::rank_n())) {
         n_procs *= 2;
         
         uint32_t new_proc = (start_proc / n_procs) * n_procs;

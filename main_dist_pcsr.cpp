@@ -20,9 +20,28 @@ using namespace std;
 // fully synchronizes a distributed PCSR
 void sync_dist_pcsr(upcxx::dist_object<DistPCSR>& pcsr) {
     // finish up all your inserts
+    int loop_count = 0;
     while (pcsr->outstanding_rpcs != 0 || !pcsr->rq_queue.empty() || pcsr->redistributing) {
-        upcxx::progress();
+        /*if (upcxx::rank_me() == 0) {
+            if (pcsr->redistributing) {
+                cout << "redistributing..." << endl;
+            }
+            else if (pcsr->outstanding_rpcs != 0) {
+                cout << "waiting on rpcs, " << pcsr->outstanding_rpcs << " remaining" << endl;
+            }
+            else {
+                cout << "request queue empty" << endl;
+            }
+        }*/
         flush_queue(pcsr);
+        /*if (upcxx::rank_me() == 0) {
+            cout << "flushed queue" << endl;
+        }*/
+        upcxx::progress();
+        /*if (upcxx::rank_me() == 0) {
+            cout << "finished progress" << endl;
+        }*/
+        loop_count += 1;
     }
     
     // at this point, all of OUR insert futures are satisfied, OUR queue is empty, and we are not redistributing
@@ -32,13 +51,14 @@ void sync_dist_pcsr(upcxx::dist_object<DistPCSR>& pcsr) {
         flush_queue(pcsr);
     }
     finished_inserts.wait();
-
+    // if (upcxx::rank_me() == 0) cout << "reached first barrier in sync_dist_pcsr" << endl;
     finished_inserts = upcxx::barrier_async();
     while (pcsr->outstanding_rpcs != 0 || !finished_inserts.ready() || !pcsr->rq_queue.empty() || pcsr->redistributing) {
         upcxx::progress();
         flush_queue(pcsr);
     }
     finished_inserts.wait();
+    // if (upcxx::rank_me() == 0) cout << "reached second barrier in sync_dist_pcsr" << endl;
 }
 
 int main(int argc, char** argv) {
@@ -54,16 +74,21 @@ int main(int argc, char** argv) {
     ifstream infile;
     int num_files = 16;
     int ranks_per_file = upcxx::rank_n() / num_files; // Make sure both of these are a power of 2.
-    infile.open("../rmat-tests/rmat-inserts-" + std::to_string(upcxx::rank_me() / ranks_per_file) + ".txt");
+    infile.open("../lj-tests/LiveJournal-inserts-" + std::to_string(upcxx::rank_me() / ranks_per_file) + ".txt");
     if (!infile.is_open()) {
-        cerr << "Couldn't open rmat files" << endl;
+        cerr << "Couldn't open LiveJournal files" << endl;
         return -1;
     }
 
     string line;
 
     if (upcxx::rank_me() == 0) cout << "(rank 0) finished setting up file I/O at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
-    upcxx::dist_object<DistPCSR> pcsr(DistPCSR(1 << 27, (1 << 24) + 1000));
+    int num_edges = 1 << 29;
+    int num_ranks = upcxx::rank_n();
+
+    upcxx::dist_object<DistPCSR> pcsr(DistPCSR((num_edges / num_ranks) * 16, (1 << 24) + 1000));
+    if (upcxx::rank_me() == 0) cout << "pma depth" << pcsr->spma.depth() << endl;
+    if (upcxx::rank_me() == 0) cout << "pma size" << pcsr->spma.size() << endl; 
     if (upcxx::rank_me() == 0) cout << "finished distpcsr construction at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
     upcxx::barrier();
     auto commands_start = std::chrono::high_resolution_clock::now();
@@ -72,13 +97,12 @@ int main(int argc, char** argv) {
     upcxx::future<> my_futures;
     bool inserting = false;
 
-    
-    
+    int total_inserts_local = 0;
     while (getline(infile, line)) {
         istringstream iss(line);
         string command;
         iss >> command;
-        if (line_number % ranks_per_file != upcxx::rank_me()) {
+        if (line_number % ranks_per_file != upcxx::rank_me() % ranks_per_file) {
         } else if (command == "BFS") {
             
         } else {
@@ -87,15 +111,16 @@ int main(int argc, char** argv) {
             // cout << "inserting edge " << u << " " << v << endl;
             tie(u, v) = DistPCSR::get_edge_tuple(edge);
             insert_edge_batched(pcsr, u, v);
+            total_inserts_local += 1;
         }
         
         if (line_number % 100000 == 0) {
-            if (upcxx::rank_me() == 0) {
-                cout << "processed 10^5 lines, at " << line_number << endl;
+            if (upcxx::rank_me() == 0 && line_number % 1000000 == 0) {
+                cout << "processed 10^6 lines, at " << line_number << endl;
             }
             sync_dist_pcsr(pcsr);
             if (upcxx::rank_me() == 0) {
-                cout << "processed all batches" << endl;
+                // cout << "processed all batches" << endl;
             }
         } 
         line_number++;
@@ -103,18 +128,20 @@ int main(int argc, char** argv) {
 
     infile.close();
     clear_batch_buffers(pcsr);
-
+    sync_dist_pcsr(pcsr);
     upcxx::barrier();
-
-    uint64_t total_elements = upcxx::reduce_one(pcsr->rq_queue.size(), upcxx::op_fast_add, 0).wait();
+    uint64_t total_inserts = upcxx::reduce_one(total_inserts_local, upcxx::op_fast_add, 0).wait();
+    uint64_t total_elements = upcxx::reduce_one(pcsr->num_elements(), upcxx::op_fast_add, 0).wait();
     if (upcxx::rank_me() == 0) {
-        cout << "total elements: " << total_elements << endl;
+        cout << "pma total inserts: " << total_inserts << endl;
+        cout << "pma total elements: " << total_elements << endl;
     }
+    // cout << "rank " << upcxx::rank_me() << " total elements: " << pcsr->num_elements() << endl;
     
     
     
     uint32_t rank = upcxx::rank_me();
-    cout << "rank " << rank << " finished at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
+    // cout << "rank " << rank << " finished at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
     
     upcxx::finalize();
     if (rank == 0) {
