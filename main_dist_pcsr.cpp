@@ -94,79 +94,89 @@ int main(int argc, char** argv) {
     DistPCSR pcsr(1 << 27, (1 << 24) + 1000);
     // DistPCSR pcsr(num_edges / upcxx::rank_n() * 4, (1 << 24) + 1000);
     int line_number = 0;
-    int total_inserts = 0;
-
+    int num_inserts = 0;
+    int num_bfs = 0;
     // cout << "Checkpoint 5" << endl;
     chrono::high_resolution_clock::time_point start_time, end_time;
     std::chrono::duration<double> insert_duration(0), query_duration(0), bfs_duration(0), pagerank_duration(0);
-
+    start_time = std::chrono::high_resolution_clock::now();
     while (getline(infile, line)) {
         // cout << "Line number " << line_number << endl;
-        if (line_number % 10000 == 0 && upcxx::rank_me() == 0) {
-            double insert_time = std::chrono::duration<double>(insert_duration).count();
-            double bfs_time = std::chrono::duration<double>(bfs_duration).count();
-            cout << "Processed " << line_number << " lines.\nTotal insert duration so far: " << insert_time << "\nTotal BFS duration so far: " << bfs_time << "\n Inserts completed: " << total_inserts << endl;
-        }
+        // if (line_number % 10000 == 0 && upcxx::rank_me() == 0) {
+
+        //     double insert_time = std::chrono::duration<double>(insert_duration).count();
+        //     double bfs_time = std::chrono::duration<double>(bfs_duration).count();
+        //     cout << "Processed " << line_number << " lines.\nTotal insert duration so far: " << insert_time << "\nTotal BFS duration so far: " << bfs_time << "\n Inserts completed: " << num_inserts << endl;
+
+        // }
         istringstream iss(line);
         string command;
         iss >> command;
         if (line_number % ranks_per_file != upcxx::rank_me() % ranks_per_file) {
         // if (line_number % upcxx::rank_n() != upcxx::rank_me()) {
             if (command == "BFS") {
+                num_bfs++;
+                end_time = std::chrono::high_resolution_clock::now();
                 upcxx::barrier();
+                insert_duration += (end_time - start_time);
+                start_time = std::chrono::high_resolution_clock::now();
                 uint32_t vertex;
                 iss >> vertex;
-                start_time = std::chrono::high_resolution_clock::now();
                 vector<int> distances = bfs(pcsr, vertex);
                 end_time = std::chrono::high_resolution_clock::now();
-                bfs_duration += (end_time - start_time) / pcsr.num_elements;
+                bfs_duration += (end_time - start_time) / pcsr.num_elements();
                 upcxx::barrier();
+                start_time = std::chrono::high_resolution_clock::now();
             }
             line_number++;
             continue;
         }
         if (command == "BFS") {
+            num_bfs++;
+            end_time = std::chrono::high_resolution_clock::now();
             upcxx::barrier();
+            insert_duration += (end_time - start_time);
+            start_time = std::chrono::high_resolution_clock::now();
             uint32_t vertex;
             iss >> vertex;
-            start_time = std::chrono::high_resolution_clock::now();
             vector<int> distances = bfs(pcsr, vertex);
             end_time = std::chrono::high_resolution_clock::now();
-            bfs_duration += end_time - start_time;
+            bfs_duration += (end_time - start_time) / pcsr.num_elements();
             upcxx::barrier();
-        } else if (command == "PUT_EDGE") {
-            total_inserts++;
-            uint32_t u, v;
-            iss >> u >> v;
-            pcsr.insert_edge(u, v);
+            start_time = std::chrono::high_resolution_clock::now();
         } else {
-            total_inserts++;
+            num_inserts++;
             uint64_t edge = stoull(command);
             uint32_t u, v;
             tie(u, v) = DistPCSR::get_edge_tuple(edge);
-            start_time = std::chrono::high_resolution_clock::now();
+            // start_time = std::chrono::high_resolution_clock::now();
             // cout << "Inserting edge " << u << " " << v << endl;
             pcsr.insert_edge(u, v);
-            end_time = std::chrono::high_resolution_clock::now();
-            insert_duration += (end_time - start_time) / pcsr.num_elements;
+            // end_time = std::chrono::high_resolution_clock::now();
+            // insert_duration += (end_time - start_time) / pcsr.num_elements;
         }
         line_number++;
     }
-
+    end_time = std::chrono::high_resolution_clock::now();
+    insert_duration += end_time - start_time;
     double insert_time = std::chrono::duration<double>(insert_duration).count();
     double bfs_time = std::chrono::duration<double>(bfs_duration).count();
     uint32_t num_elements = pcsr.num_elements();
     upcxx::barrier();
     
-
+    double inserts_average_time = upcxx::reduce_one(insert_time, upcxx::op_fast_add, 0).wait() / upcxx::rank_n();
+    uint32_t total_inserts = upcxx::reduce_one(num_inserts, upcxx::op_fast_add, 0).wait();
+    double inserts_throughput = total_inserts / inserts_average_time;
+    int total_bfs_calls = upcxx::reduce_one(num_bfs, upcxx::op_fast_add, 0).wait();
+    double bfs_average_time = upcxx::reduce_one(bfs_time, upcxx::op_fast_add, 0).wait() / total_bfs_calls * pcsr.num_elements();
     if (upcxx::rank_me() == 0) {
-        double insert_time = std::chrono::duration<double>(insert_duration).count();
-        double bfs_time = std::chrono::duration<double>(bfs_duration).count();
-        cout << "Processed " << line_number << " lines.\nTotal insert duration so far: " << insert_time << "\nTotal BFS duration so far: " << bfs_time << "\n Inserts completed: " << total_inserts << endl;
+        cout << "Insert time: " << inserts_average_time << endl;
+        cout << "Insert throughput: " << inserts_throughput << endl;
+        cout << "bfs average time scaled to full graph size: " << bfs_average_time << endl;
     }
 
 
-    // uint32_t total_num_inserts = upcxx::reduce_one(total_inserts, upcxx::op_fast_add, 0).wait();
+    // uint32_t total_num_inserts = upcxx::reduce_one(num_inserts, upcxx::op_fast_add, 0).wait();
     // uint32_t total_num_elements = upcxx::reduce_one(num_elements, upcxx::op_fast_add, 0).wait();
     // cout << "pma total inserts: " << total_num_inserts << endl; 
     // cout << "pma total elements: " << total_num_elements << endl; 
@@ -177,7 +187,7 @@ int main(int argc, char** argv) {
 
     infile.close();
     outfile.close();
-    cout << "Rank " << upcxx::rank_me() << " finished" << endl;
+    // cout << "Rank " << upcxx::rank_me() << " finished" << endl;
     upcxx::barrier();
     start_time = std::chrono::high_resolution_clock::now();
     vector<double> pr_values = pagerank(pcsr);
