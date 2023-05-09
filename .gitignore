@@ -1,2 +1,5 @@
 .vscode/*
 *.out
+build/*
+rmat-tests/*
+lj-tests/*
