@@ -261,6 +261,9 @@ void SetPMA::insert(uint64_t key) {
     if (index != INVALID_IDX && data[index] == key) {
         return;
     }
+    // if (data[index] == key) {
+    //     return;
+    // }
     _num_elements += 1;
     if (index == _max_index) {
         _max_index = index + 1;
