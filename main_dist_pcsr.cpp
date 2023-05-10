@@ -11,6 +11,7 @@
 #include <fstream> 
 #include <sstream>
 #include <iostream>
+#include <cmath>
 
 #include "dist_pcsr.hpp"
 // #include "butil.hpp"
@@ -79,7 +80,7 @@ int main(int argc, char** argv) {
     ifstream infile;
     int num_files = 16;
     int ranks_per_file = upcxx::rank_n() / num_files; // Make sure both of these are a power of 2.
-    infile.open("../lj-tests/LiveJournal-inserts-shuffled-" + std::to_string(upcxx::rank_me() / ranks_per_file) + ".txt");
+    infile.open("../rmat-tests/rmat-inserts-" + std::to_string(upcxx::rank_me() / ranks_per_file) + ".txt");
     if (!infile.is_open()) {
         cerr << "Couldn't open LiveJournal files" << endl;
         return -1;
@@ -88,7 +89,7 @@ int main(int argc, char** argv) {
     string line;
 
     if (upcxx::rank_me() == 0) cout << "(rank 0) finished setting up file I/O at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
-    int num_edges = 1 << 27;
+    int num_edges = 1 << 29;
     int num_ranks = upcxx::rank_n();
 
     upcxx::dist_object<DistPCSR> pcsr(DistPCSR((num_edges / num_ranks) * 2, (1 << 23) + 1000));
@@ -318,6 +319,7 @@ vector<int> bfs(upcxx::dist_object<DistPCSR> &pcsr, uint32_t source) {
 
 // requires num_vertices to be correct, i.e. # vertices is correctly known before inserts
 vector<double> pagerank(upcxx::dist_object<DistPCSR> &pcsr) {
+    double epsilon = 0.0000001;
     double damping_factor = 0.85;
     int max_iterations = 100;
     vector<uint32_t> vertex_ranges = make_vertex_ranges(pcsr);
@@ -339,7 +341,16 @@ vector<double> pagerank(upcxx::dist_object<DistPCSR> &pcsr) {
     contributions_destinations.resize(upcxx::rank_n());
 
     while (iteration < max_iterations) {
-        // local_prev_pagerank = local_pagerank;
+        if (upcxx::rank_me() == 0) { cout << "pagerank iteration " << iteration << endl; }
+        double l1_norm = 0;
+        for (int i = 0; i < local_pagerank.size(); i++) {
+            l1_norm += std::abs(local_pagerank[i] - local_prev_pagerank[i]);
+        }
+        double all_l1_norm = upcxx::reduce_all(l1_norm, upcxx::op_fast_add).wait();
+        if (all_l1_norm < epsilon) {
+            break;
+        }
+
         vector<double> tmp = std::move(local_prev_pagerank);
         local_prev_pagerank = std::move(local_pagerank);
         local_pagerank = std::move(tmp);
@@ -364,7 +375,6 @@ vector<double> pagerank(upcxx::dist_object<DistPCSR> &pcsr) {
         (*contributions_recv).clear();
 
         upcxx::barrier();
-
         upcxx::future<> all_futures = upcxx::make_future();
 
         for (int target_rank = 0; target_rank < upcxx::rank_n(); target_rank++) {
@@ -382,7 +392,6 @@ vector<double> pagerank(upcxx::dist_object<DistPCSR> &pcsr) {
         }
 
         all_futures.wait();
-
         upcxx::barrier();
 
         for (pair<uint32_t, double> contribution_pair : (*contributions_recv)) {

@@ -215,7 +215,6 @@ void DistPCSR::insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t fr
         uint64_t edge = make_edge_tuple(from, to);
         spma.insert(edge);
         if (spma._num_elements > (uint32_t) ((spma._leaf_max - spma.depth() * 0.01) * spma.size())) {
-            cout << "rank " << upcxx::rank_me() << " redistributing!" << endl;
             redistribute(pcsr);
         }
     }
@@ -434,11 +433,11 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
     // if someone else redistributed with us while we were waiting for lock,
     // making a redistribute unnecessary, then don't redistribute
     if (!pcsr->redistributing) {
-        
         pcsr->release_redis_lock();
         return;
     }
 
+    cout << "rank " << upcxx::rank_me() << " redistributing!" << endl;
     
     uint32_t total_elements = pcsr->spma._num_elements;
     vector<uint32_t> element_counts(upcxx::rank_n(), 0);
@@ -459,6 +458,8 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
         start_proc = new_proc;
         level += 1;
     }
+
+    cout << "redistributing with [" << start_proc << ", " << start_proc + n_procs << ")" << endl; 
     
     if (n_procs == upcxx::rank_n() && total_elements >= (uint32_t) ((pcsr->spma._leaf_max - level * 0.01) * n_procs * pcsr->size())) {
         cerr << "total elements " << total_elements << timestamp_endl;
@@ -478,10 +479,7 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
         auto lambda = [](upcxx::dist_object<DistPCSR>& pcsr, const vector<uint32_t>& flattened_commands) -> upcxx::future<range_t> {
             temp.clear();
             upcxx::future<> retrieve_future = upcxx::make_future();
-            
-
             for (uint32_t c = 0; c < flattened_commands.size(); c += 3) {
-                
                 tuple<uint32_t, uint32_t, uint32_t> command = make_tuple(flattened_commands[c], flattened_commands[c + 1], flattened_commands[c + 2]);
                 retrieve_future = upcxx::when_all(retrieve_future, retrieve_command(pcsr, command));
             }
@@ -492,8 +490,6 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
                     pcsr->my_range = make_pair(temp.front(), temp.back());
                     uint32_t current_version = std::get<0>(pcsr->cached_ranges[upcxx::rank_me()]);
                     pcsr->cached_ranges[upcxx::rank_me()] = (range_t) make_tuple(current_version + 1, temp.front(), temp.back());
-                    
-
                     return pcsr->cached_ranges[upcxx::rank_me()];
                 }
             );
