@@ -8,4 +8,4 @@ export GASNET_BACKTRACE_SIGNAL=SIGUSR1
 
 # salloc -N 2 -A mp309 -t 10:00 -q debug --qos=interactive -C cpu srun -N 2 -n 8 ./main_dist_pcsr ../tests/pcsr_inserts_2.txt test
 # srun -N 8 -n 128 ./main_dist_pcsr
-srun -N 8 -n 16 ./main_dist_pcsr
+srun -N 8 -n 128 ./main_dist_pcsr

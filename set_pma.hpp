@@ -118,11 +118,11 @@ void SetPMA::swap_data(std::vector<uint64_t>& temp) {
     temp.resize(_size, INT_NULL);
     std::swap(data, temp);
     _num_elements = density_count;
-    cout << "swapping data..." << endl;
-    cout << density_count << endl;
+    // cout << "swapping data..." << endl;
+    // cout << density_count << endl;
     redistribute(0, _size, density_count);
-    cout << _max_index << endl;
-    cout << data[_max_index] << endl;
+    // cout << _max_index << endl;
+    // cout << data[_max_index] << endl;
 }
 
 uint32_t MSSB(uint32_t x) {
@@ -334,7 +334,8 @@ void SetPMA::redistribute(uint32_t index, uint32_t len, uint32_t density_count) 
         memcpy(&data[index + leaf * logN()], &_temp[x], num_elems_to_copy * sizeof(uint64_t));
         x += num_elems_to_copy;
         // if we are on final iteration and _max_index is within the redistribute, update _max_index
-        if (leaf == nl - 1 && _max_index >= index && _max_index < index + len) {
+        // _max_index can be INVALID_IDX if there have never been any inserts (e.g. we are redistributed to as first operation of this PMA)
+        if (leaf == nl - 1 && (_max_index >= index && _max_index < index + len || _max_index == INVALID_IDX)) {
             if (num_elems_to_copy == 0) {
                 cout << "???" << endl;
                 exit(-1);

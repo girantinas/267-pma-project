@@ -18,6 +18,7 @@
 using namespace std;
 
 vector<int> bfs(upcxx::dist_object<DistPCSR> &pcsr, uint32_t source);
+vector<double> pagerank(upcxx::dist_object<DistPCSR> &pcsr);
 
 // fully synchronizes a distributed PCSR
 void sync_dist_pcsr(upcxx::dist_object<DistPCSR>& pcsr) {
@@ -90,7 +91,7 @@ int main(int argc, char** argv) {
     int num_edges = 1 << 27;
     int num_ranks = upcxx::rank_n();
 
-    upcxx::dist_object<DistPCSR> pcsr(DistPCSR((num_edges / num_ranks) * 2, 1000));
+    upcxx::dist_object<DistPCSR> pcsr(DistPCSR((num_edges / num_ranks) * 2, (1 << 23) + 1000));
     if (upcxx::rank_me() == 0) cout << "pma depth" << pcsr->spma.depth() << endl;
     if (upcxx::rank_me() == 0) cout << "pma size" << pcsr->spma.size() << endl; 
     if (upcxx::rank_me() == 0) cout << "finished distpcsr construction at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
@@ -100,7 +101,10 @@ int main(int argc, char** argv) {
     int line_number = 0;
     upcxx::future<> my_futures;
     bool inserting = false;
-
+    int num_inserts = 0;
+    chrono::high_resolution_clock::time_point start_time, end_time;
+    std::chrono::duration<double> insert_duration(0), query_duration(0), bfs_duration(0), pagerank_duration(0);
+    start_time = std::chrono::high_resolution_clock::now();
     int total_inserts_local = 0;
     while (getline(infile, line)) {
         istringstream iss(line);
@@ -108,8 +112,8 @@ int main(int argc, char** argv) {
         iss >> command;
         if (line_number % ranks_per_file != upcxx::rank_me() % ranks_per_file) {
         } else if (command == "BFS") {
-            
         } else {
+            num_inserts++;
             uint64_t edge = stoull(command);
             uint32_t u, v;
             // cout << "inserting edge " << u << " " << v << endl;
@@ -129,10 +133,10 @@ int main(int argc, char** argv) {
         } 
         line_number++;
     }
-
-    infile.close();
     clear_batch_buffers(pcsr);
     sync_dist_pcsr(pcsr);
+    end_time = std::chrono::high_resolution_clock::now();
+    insert_duration += end_time - start_time;
     upcxx::barrier();
     uint64_t total_inserts = upcxx::reduce_one(total_inserts_local, upcxx::op_fast_add, 0).wait();
     uint64_t total_elements = upcxx::reduce_one(pcsr->num_elements(), upcxx::op_fast_add, 0).wait();
@@ -142,14 +146,40 @@ int main(int argc, char** argv) {
         cout << "all inserts finished at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
         cout << "time spent: " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - commands_start).count() << endl;
     }
-    vector<int> distances = bfs(pcsr, 5);
+    
+    start_time = std::chrono::high_resolution_clock::now();
+    uint32_t vertex = 0;
+    vector<int> distances = bfs(pcsr, vertex);
+    end_time = std::chrono::high_resolution_clock::now();
+    upcxx::barrier();
+    
+    bfs_duration += (end_time - start_time);
+    double insert_time = std::chrono::duration<double>(insert_duration).count();
+    double bfs_time = std::chrono::duration<double>(bfs_duration).count();
+    uint32_t num_elements = pcsr->num_elements();
+    upcxx::barrier();
 
-    uint32_t rank = upcxx::rank_me();
-    upcxx::finalize();
-    if (rank == 0) {
-        cout << "all finished at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
-        cout << "time spent: " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - commands_start).count() << endl;
+    double inserts_average_time = upcxx::reduce_one(insert_time, upcxx::op_fast_add, 0).wait() / upcxx::rank_n();
+    double inserts_throughput = total_inserts / inserts_average_time;
+
+    if (upcxx::rank_me() == 0) {
+        cout << "Insert time: " << inserts_average_time << endl;
+        cout << "Insert throughput: " << inserts_throughput << endl;
+        cout << "bfs average time: " << bfs_time << endl;
     }
+
+    infile.close();
+    
+    upcxx::barrier();
+    start_time = std::chrono::high_resolution_clock::now();
+    vector<double> pr_values = pagerank(pcsr);
+    end_time = std::chrono::high_resolution_clock::now();
+    upcxx::barrier();
+    if (upcxx::rank_me() == 0) {
+        cout << "PageRank total time: " << std::chrono::duration<double>(end_time - start_time).count() << endl;
+    }
+    
+    upcxx::finalize();
     return 0;
 }
 
@@ -215,12 +245,16 @@ vector<int> bfs(upcxx::dist_object<DistPCSR> &pcsr, uint32_t source) {
     int level = 0;
 
     upcxx::dist_object<vector<uint32_t>> next_set_recv{vector<uint32_t>()};
+    vector<vector<uint32_t>> vertex_destinations;
+    vertex_destinations.resize(upcxx::rank_n());
+    
+    unordered_set<uint32_t> next_set;
 
     upcxx::barrier();
 
     while (true) {
         if (upcxx::rank_me() == 0) cout << "level " << level << endl;
-        unordered_set<uint32_t> next_set;
+        next_set.clear();
         bool is_frontier_empty = frontier.empty();
         bool all_frontiers_empty = upcxx::reduce_all(is_frontier_empty, upcxx::op_fast_bit_and).wait();
         if (all_frontiers_empty) {
@@ -234,8 +268,9 @@ vector<int> bfs(upcxx::dist_object<DistPCSR> &pcsr, uint32_t source) {
         }   
         all_futures.wait();
 
-        vector<vector<uint32_t>> vertex_destinations;
-        vertex_destinations.resize(upcxx::rank_n());
+        for (int i = 0; i < upcxx::rank_n(); i += 1) {
+            vertex_destinations[i].clear();
+        }
 
         for (uint32_t next_vertex : next_set) {
             int target_rank = vertex_target_rank(vertex_ranges, next_vertex);
@@ -281,26 +316,81 @@ vector<int> bfs(upcxx::dist_object<DistPCSR> &pcsr, uint32_t source) {
     return local_distances;
 }
 
-// vector<int> bfs_serial(upcxx::dist_object<DistPCSR> &pcsr, uint32_t source) {
-//     if (upcxx::rank_me() == 0) cout << "BFS Start" << endl;
-//     vector<int> distances(pcsr->num_vertices, -1);
-//     deque<uint32_t> queue;
+// requires num_vertices to be correct, i.e. # vertices is correctly known before inserts
+vector<double> pagerank(upcxx::dist_object<DistPCSR> &pcsr) {
+    double damping_factor = 0.85;
+    int max_iterations = 100;
+    vector<uint32_t> vertex_ranges = make_vertex_ranges(pcsr);
+    uint32_t start_vertex = vertex_ranges[upcxx::rank_me()];
+    uint32_t end_vertex = vertex_ranges[upcxx::rank_me() + 1];
 
-//     distances[source] = 0;
-//     queue.push_back(source);
-//     vector<uint32_t> neighbors;
-//     while (!queue.empty()) {
-//         uint32_t current = queue.front();
-//         queue.pop_front();
-//         neighbors.clear();
-//         edges(pcsr, current, neighbors).wait();
-//         for (uint32_t neighbor : neighbors) {
-//             if (distances[neighbor] == -1) {
-//                 distances[neighbor] = distances[current] + 1;
-//                 queue.push_back(neighbor);
-//             }
-//         }
-//     }
-//     if (upcxx::rank_me() == 0) cout << "BFS Finish" << endl;
-//     return distances;
-// }
+    uint32_t local_num_vertices = end_vertex - start_vertex;
+
+    vector<double> local_pagerank(local_num_vertices, 1.0 / pcsr->num_vertices);
+    vector<double> local_prev_pagerank(local_num_vertices, 0.0);
+
+    upcxx::dist_object<vector<pair<uint32_t, double>>> contributions_recv{vector<pair<uint32_t, double>>()};
+
+    int iteration = 0;
+
+    upcxx::barrier();
+
+    vector<vector<pair<uint32_t, double>>> contributions_destinations;
+    contributions_destinations.resize(upcxx::rank_n());
+
+    while (iteration < max_iterations) {
+        // local_prev_pagerank = local_pagerank;
+        vector<double> tmp = std::move(local_prev_pagerank);
+        local_prev_pagerank = std::move(local_pagerank);
+        local_pagerank = std::move(tmp);
+        
+        local_pagerank.assign(local_num_vertices, (1.0 - damping_factor) / pcsr->num_vertices);
+
+        for (int i = 0; i < upcxx::rank_n(); i += 1) {
+            contributions_destinations[i].clear();
+        }
+        
+
+        for (uint32_t vertex = start_vertex; vertex < end_vertex; vertex++) {
+            vector<uint32_t> out_edges;
+            edges(pcsr, vertex, out_edges).wait();
+            double contribution = local_prev_pagerank[vertex - start_vertex] / out_edges.size();
+            for (uint32_t neighbor : out_edges) {
+                int target_rank = vertex_target_rank(vertex_ranges, neighbor);
+                contributions_destinations[target_rank].push_back(make_pair(neighbor, contribution));
+            }
+        }
+        
+        (*contributions_recv).clear();
+
+        upcxx::barrier();
+
+        upcxx::future<> all_futures = upcxx::make_future();
+
+        for (int target_rank = 0; target_rank < upcxx::rank_n(); target_rank++) {
+            if (target_rank == upcxx::rank_me()) {
+                (*contributions_recv).insert((*contributions_recv).end(), contributions_destinations[target_rank].begin(), contributions_destinations[target_rank].end());
+            } else {
+                all_futures = upcxx::when_all(all_futures, 
+                upcxx::rpc(
+                    target_rank, [](auto& contributions_recv, const vector<pair<uint32_t, double>>& contributions) {
+                        (*contributions_recv).insert((*contributions_recv).end(), contributions.begin(), contributions.end());
+                    },
+                    contributions_recv, contributions_destinations[target_rank] // Should I capture this instead?
+                )); // Join these together then wait on all at once if we feel like 
+            }
+        }
+
+        all_futures.wait();
+
+        upcxx::barrier();
+
+        for (pair<uint32_t, double> contribution_pair : (*contributions_recv)) {
+            uint32_t vertex = contribution_pair.first;
+            double contribution = contribution_pair.second;
+            local_pagerank[vertex - start_vertex] += contribution * damping_factor;
+        }
+        iteration++;
+    }
+    return local_pagerank;
+}
