@@ -47,7 +47,7 @@ class DistPCSR {
         void print_dist_pcsr();
 
         deque<Insert> rq_queue;
-        static constexpr double INIT_LEAF_MAX = 0.8;
+        static constexpr double INIT_LEAF_MAX = 0.9;
         static uint64_t make_edge_tuple(uint32_t from, uint32_t to);
         static pair<uint32_t, uint32_t> get_edge_tuple(uint64_t edge);
         uint32_t target_rank(uint32_t from, uint32_t to);
@@ -177,8 +177,7 @@ uint32_t DistPCSR::target_rank(uint32_t from, uint32_t to) {
     uint32_t index;
     if (target != cached_ranges.end() && std::get<1>(*target) == edge_tuple) {
         index = target - cached_ranges.begin(); // need this because if its actually equal to low end of interval of some range, don't want smaller proc. basically, discrepancy between < and <=
-    }
-    else {
+    } else {
         if (target == cached_ranges.begin()) {
             // if this is smaller than all known intervals, send to rank 0
             index = 0;
@@ -618,6 +617,30 @@ upcxx::future<> edges(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, vector<
                 }, pcsr
             ).then([&dest](vector<uint32_t> v) {
                 dest.insert(dest.end(), v.begin(), v.end());
+            });
+            finish_future = upcxx::when_all(f, finish_future);
+        }
+    }
+    return finish_future;
+}
+
+upcxx::future<> add_neighbors_to_set(upcxx::dist_object<DistPCSR>& pcsr, uint32_t from, unordered_set<uint32_t>& dest) {
+    uint32_t begin_rank = pcsr->target_rank(from, 0);
+    uint32_t end_rank = pcsr->target_rank(from, UINT32_MAX);
+
+    upcxx::future<> finish_future = upcxx::make_future();
+    for (int rank = begin_rank; rank <= end_rank; ++rank) {
+        if (rank == upcxx::rank_me()) {
+            for (uint32_t v : pcsr->edges_local(from)) {
+                dest.insert(v);
+            };
+        } else {
+            auto f = upcxx::rpc(rank, 
+                [from](upcxx::dist_object<DistPCSR>& local_pcsr) {
+                    return local_pcsr->edges_local(from);
+                }, pcsr
+            ).then([&dest](vector<uint32_t> v) {
+                dest.insert(v.begin(), v.end());
             });
             finish_future = upcxx::when_all(f, finish_future);
         }

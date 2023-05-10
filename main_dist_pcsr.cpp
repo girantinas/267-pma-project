@@ -17,6 +17,8 @@
 
 using namespace std;
 
+vector<int> bfs(upcxx::dist_object<DistPCSR> &pcsr, uint32_t source);
+
 // fully synchronizes a distributed PCSR
 void sync_dist_pcsr(upcxx::dist_object<DistPCSR>& pcsr) {
     // finish up all your inserts
@@ -61,6 +63,8 @@ void sync_dist_pcsr(upcxx::dist_object<DistPCSR>& pcsr) {
     // if (upcxx::rank_me() == 0) cout << "reached second barrier in sync_dist_pcsr" << endl;
 }
 
+vector<int> bfs_serial(upcxx::dist_object<DistPCSR> &pcsr, uint32_t source);
+
 int main(int argc, char** argv) {
     if (std::strcmp(std::getenv("GASNET_OFI_RECEIVE_BUFF_SIZE"), "single")) {
         cout << "Critical error: GASNET_OFI_RECEIVE_BUFF_SIZE workaround not detected (value=" << std::getenv("GASNET_OFI_RECEIVE_BUFF_SIZE") << ")" << endl;
@@ -74,7 +78,7 @@ int main(int argc, char** argv) {
     ifstream infile;
     int num_files = 16;
     int ranks_per_file = upcxx::rank_n() / num_files; // Make sure both of these are a power of 2.
-    infile.open("../rmat-tests/rmat-inserts-" + std::to_string(upcxx::rank_me() / ranks_per_file) + ".txt");
+    infile.open("../lj-tests/LiveJournal-inserts-shuffled-" + std::to_string(upcxx::rank_me() / ranks_per_file) + ".txt");
     if (!infile.is_open()) {
         cerr << "Couldn't open LiveJournal files" << endl;
         return -1;
@@ -83,10 +87,10 @@ int main(int argc, char** argv) {
     string line;
 
     if (upcxx::rank_me() == 0) cout << "(rank 0) finished setting up file I/O at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
-    int num_edges = 1 << 29;
+    int num_edges = 1 << 27;
     int num_ranks = upcxx::rank_n();
 
-    upcxx::dist_object<DistPCSR> pcsr(DistPCSR((num_edges / num_ranks) * 16, (1 << 24) + 1000));
+    upcxx::dist_object<DistPCSR> pcsr(DistPCSR((num_edges / num_ranks) * 2, 1000));
     if (upcxx::rank_me() == 0) cout << "pma depth" << pcsr->spma.depth() << endl;
     if (upcxx::rank_me() == 0) cout << "pma size" << pcsr->spma.size() << endl; 
     if (upcxx::rank_me() == 0) cout << "finished distpcsr construction at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
@@ -135,14 +139,12 @@ int main(int argc, char** argv) {
     if (upcxx::rank_me() == 0) {
         cout << "pma total inserts: " << total_inserts << endl;
         cout << "pma total elements: " << total_elements << endl;
+        cout << "all inserts finished at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
+        cout << "time spent: " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - commands_start).count() << endl;
     }
-    // cout << "rank " << upcxx::rank_me() << " total elements: " << pcsr->num_elements() << endl;
-    
-    
-    
+    vector<int> distances = bfs(pcsr, 5);
+
     uint32_t rank = upcxx::rank_me();
-    // cout << "rank " << rank << " finished at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
-    
     upcxx::finalize();
     if (rank == 0) {
         cout << "all finished at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
@@ -151,10 +153,44 @@ int main(int argc, char** argv) {
     return 0;
 }
 
-/*
-vector<int> bfs(DistPCSR &pcsr, uint32_t source) {
-    uint32_t start_vertex = pcsr.num_vertices / upcxx::rank_n() * upcxx::rank_me();
-    uint32_t end_vertex = start_vertex + pcsr.num_vertices / upcxx::rank_n();
+vector<uint32_t> make_vertex_ranges(upcxx::dist_object<DistPCSR> &pcsr) {
+    vector<uint32_t> vertex_ranges;
+    uint32_t next_range_start = 0;
+    for (tuple<uint32_t, uint64_t, uint64_t> range : pcsr->cached_ranges) {
+        pair<uint32_t, uint32_t> range_end = DistPCSR::get_edge_tuple(std::get<2>(range));
+        vertex_ranges.push_back(next_range_start);
+        next_range_start = range_end.first + 1;
+    }
+    vertex_ranges.push_back(next_range_start);
+    return vertex_ranges;
+}
+
+uint32_t vertex_target_rank(vector<uint32_t>& vertex_ranges, uint32_t v) {
+    auto target = std::lower_bound(
+        vertex_ranges.begin(),
+        vertex_ranges.end(),
+        v
+    );
+    uint32_t index;
+    if (target != vertex_ranges.end() && *target == v) {
+        index = target - vertex_ranges.begin();
+    } else {
+        if (target == vertex_ranges.begin()) {
+            // if this is smaller than all known intervals, send to rank 0
+            index = 0;
+        }
+        else {
+            index = target - vertex_ranges.begin() - 1;
+        }
+    }
+    return index;
+}
+
+vector<int> bfs(upcxx::dist_object<DistPCSR> &pcsr, uint32_t source) {
+    vector<uint32_t> vertex_ranges = make_vertex_ranges(pcsr);
+    uint32_t start_vertex = vertex_ranges[upcxx::rank_me()];
+    uint32_t end_vertex = vertex_ranges[upcxx::rank_me() + 1];
+
     uint32_t local_num_vertices = end_vertex - start_vertex;
 
     vector<int> local_distances(local_num_vertices, -1);
@@ -163,9 +199,18 @@ vector<int> bfs(DistPCSR &pcsr, uint32_t source) {
         local_distances[source - start_vertex] = 0;
     }
 
-    deque<uint32_t> frontiers;
-    if (upcxx::rank_me() == pcsr.target_rank(source)) {
-        frontiers.push_back(source);
+    deque<uint32_t> frontier;
+    /*
+    if (upcxx::rank_me() == 0) {
+        cout << "target rank for source vertex: " << vertex_target_rank(vertex_ranges, source) << endl;
+        cout << "vertex ranges: " << endl;
+        for (int i = 0; i < upcxx::rank_n(); i += 1) {
+            cout << "proc " << i << " [" << vertex_ranges[i] << ", " << vertex_ranges[i+1] << ")" << endl;
+        }
+    }
+    */
+    if (upcxx::rank_me() == vertex_target_rank(vertex_ranges, source)) {
+        frontier.push_back(source);
     }
     int level = 0;
 
@@ -174,24 +219,26 @@ vector<int> bfs(DistPCSR &pcsr, uint32_t source) {
     upcxx::barrier();
 
     while (true) {
-
-        vector<uint32_t> next_set;
-        bool is_frontier_empty = frontiers.empty();
+        if (upcxx::rank_me() == 0) cout << "level " << level << endl;
+        unordered_set<uint32_t> next_set;
+        bool is_frontier_empty = frontier.empty();
         bool all_frontiers_empty = upcxx::reduce_all(is_frontier_empty, upcxx::op_fast_bit_and).wait();
         if (all_frontiers_empty) {
             break;
         }
 
-        for (uint32_t vertex : frontiers) {
-            vector<uint32_t> neighbors = pcsr.edges(vertex);
-            next_set.insert(next_set.end(), neighbors.begin(), neighbors.end());
-        }
+        upcxx::future<> all_futures = upcxx::make_future();
+        for (uint32_t vertex : frontier) {
+            upcxx::future<> fut = add_neighbors_to_set(pcsr, vertex, next_set);
+            all_futures = upcxx::when_all(all_futures, fut);
+        }   
+        all_futures.wait();
 
         vector<vector<uint32_t>> vertex_destinations;
         vertex_destinations.resize(upcxx::rank_n());
 
         for (uint32_t next_vertex : next_set) {
-            int target_rank = pcsr.target_rank(next_vertex);
+            int target_rank = vertex_target_rank(vertex_ranges, next_vertex);
             vertex_destinations[target_rank].push_back(next_vertex);
         }
 
@@ -199,7 +246,7 @@ vector<int> bfs(DistPCSR &pcsr, uint32_t source) {
 
         upcxx::barrier();
 
-        upcxx::future<> all_futures = upcxx::make_future();
+        all_futures = upcxx::make_future();
 
         for (uint32_t target_rank = 0; target_rank < upcxx::rank_n(); target_rank++) {
             if (target_rank == upcxx::rank_me()) {
@@ -219,13 +266,13 @@ vector<int> bfs(DistPCSR &pcsr, uint32_t source) {
         all_futures.wait();
 
         upcxx::barrier();
-        frontiers.clear();
+        frontier.clear();
 
         for (uint32_t vertex : *next_set_recv) {
             int val = local_distances[vertex - start_vertex];
             if (local_distances[vertex - start_vertex] == -1) {
                 local_distances[vertex - start_vertex] = level + 1;
-                frontiers.push_back(vertex);
+                frontier.push_back(vertex);
             }
         }
 
@@ -233,29 +280,27 @@ vector<int> bfs(DistPCSR &pcsr, uint32_t source) {
     }
     return local_distances;
 }
-*/
-/*
-vector<int> bfs_serial(DistPCSR &pcsr, uint32_t source) {
-    if (upcxx::rank_me() == 0) cout << "BFS Start" << endl;
-    vector<int> distances(pcsr.num_vertices, -1);
-    deque<uint32_t> queue;
 
-    distances[source] = 0;
-    queue.push_back(source);
+// vector<int> bfs_serial(upcxx::dist_object<DistPCSR> &pcsr, uint32_t source) {
+//     if (upcxx::rank_me() == 0) cout << "BFS Start" << endl;
+//     vector<int> distances(pcsr->num_vertices, -1);
+//     deque<uint32_t> queue;
 
-    while (!queue.empty()) {
-        uint32_t current = queue.front();
-        queue.pop_front();
-
-        vector<uint32_t> neighbors = pcsr.edges(current).wait();
-        for (uint32_t neighbor : neighbors) {
-            if (distances[neighbor] == -1) {
-                distances[neighbor] = distances[current] + 1;
-                queue.push_back(neighbor);
-            }
-        }
-    }
-    if (upcxx::rank_me() == 0) cout << "BFS Finish" << endl;
-    return distances;
-}
-*/
+//     distances[source] = 0;
+//     queue.push_back(source);
+//     vector<uint32_t> neighbors;
+//     while (!queue.empty()) {
+//         uint32_t current = queue.front();
+//         queue.pop_front();
+//         neighbors.clear();
+//         edges(pcsr, current, neighbors).wait();
+//         for (uint32_t neighbor : neighbors) {
+//             if (distances[neighbor] == -1) {
+//                 distances[neighbor] = distances[current] + 1;
+//                 queue.push_back(neighbor);
+//             }
+//         }
+//     }
+//     if (upcxx::rank_me() == 0) cout << "BFS Finish" << endl;
+//     return distances;
+// }

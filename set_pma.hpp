@@ -118,7 +118,11 @@ void SetPMA::swap_data(std::vector<uint64_t>& temp) {
     temp.resize(_size, INT_NULL);
     std::swap(data, temp);
     _num_elements = density_count;
+    cout << "swapping data..." << endl;
+    cout << density_count << endl;
     redistribute(0, _size, density_count);
+    cout << _max_index << endl;
+    cout << data[_max_index] << endl;
 }
 
 uint32_t MSSB(uint32_t x) {
