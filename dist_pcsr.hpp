@@ -58,6 +58,10 @@ uint32_t DistPCSR::num_elements() {
 void DistPCSR::insert_edge(uint32_t from, uint32_t to) {
     uint32_t rank = target_rank(from);
     uint64_t edge = make_edge_tuple(from, to);
+    if (upcxx::rank_me() == rank) {
+        dist_spma->insert(edge);
+        return;
+    }
     upcxx::rpc(rank,
         [](upcxx::dist_object<SetPMA> &dist_spma, uint64_t edge) {
             dist_spma->insert(edge);
@@ -79,7 +83,16 @@ bool DistPCSR::query_edge(uint32_t from, uint32_t to) {
 
 vector<uint32_t> DistPCSR::edges(uint32_t from) {
     uint32_t rank = target_rank(from);
+    if (rank == upcxx::rank_me()) {
+        uint64_t from_padded = ((uint64_t)from) << 32;
+        vector<uint32_t> edge_list;
+        auto edge_populater = SetPMA::range_func([&edge_list](uint64_t v) {
+            edge_list.push_back((uint32_t)v);
+        });
 
+        dist_spma->range(from_padded, from_padded | 0xFFFFFFFF, edge_populater);
+        return edge_list;
+    }
     return upcxx::rpc(rank,
         [](upcxx::dist_object<SetPMA> &dist_spma, uint32_t from) {
             uint64_t from_padded = ((uint64_t)from) << 32;
