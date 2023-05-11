@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
     ifstream infile;
     int num_files = 16;
     int ranks_per_file = upcxx::rank_n() / num_files; // Make sure both of these are a power of 2.
-    infile.open("../rmat-tests/rmat-inserts-shuffled-" + std::to_string(upcxx::rank_me() / ranks_per_file) + ".txt");
+    infile.open("/pscratch/sd/j/jyou12/rmat-tests/rmat-inserts-" + std::to_string(upcxx::rank_me() / ranks_per_file) + ".txt");
     if (!infile.is_open()) {
         cerr << "Couldn't open LiveJournal files" << endl;
         return -1;
@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
     int num_edges = 1 << 29;
     int num_ranks = upcxx::rank_n();
 
-    upcxx::dist_object<DistPCSR> pcsr(DistPCSR((num_edges / num_ranks) * 4, (1 << 23) + 1000));
+    upcxx::dist_object<DistPCSR> pcsr(DistPCSR((num_edges / num_ranks) * 4, (1 << 24) + 1000));
     if (upcxx::rank_me() == 0) cout << "pma depth" << pcsr->spma.depth() << endl;
     if (upcxx::rank_me() == 0) cout << "pma size" << pcsr->spma.size() << endl; 
     if (upcxx::rank_me() == 0) cout << "finished distpcsr construction at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
