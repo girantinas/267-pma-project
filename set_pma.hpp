@@ -319,10 +319,14 @@ void SetPMA::insert(uint64_t key) {
 void SetPMA::redistribute(uint32_t index, uint32_t len, uint32_t density_count) {
     _temp.reserve(len); // t - s, t = index
     _temp.clear();
-    for (uint32_t i = index; i < len + index; ++i) {
+    for (uint32_t i = index; i < len + index;) {
         if (data[i] != INT_NULL) {
             _temp.push_back(data[i]);
             data[i] = INT_NULL;
+            i += 1;
+        }
+        else {
+            i = next_leaf(i);
         }
     }
     

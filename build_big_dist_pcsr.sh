@@ -5,7 +5,8 @@ cmake --build .
 export GASNET_BACKTRACE=1
 export GASNET_OFI_RECEIVE_BUFF_SIZE=single
 export GASNET_BACKTRACE_SIGNAL=SIGUSR1
+export UPCXX_SEGMENT_MB=4096
 
 # salloc -N 2 -A mp309 -t 10:00 -q debug --qos=interactive -C cpu srun -N 2 -n 8 ./main_dist_pcsr ../tests/pcsr_inserts_2.txt test
 # srun -N 8 -n 128 ./main_dist_pcsr
-srun -N 8 -n 256 ./main_dist_pcsr
+srun -N 1 -n 64 ./main_dist_pcsr

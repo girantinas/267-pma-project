@@ -25,6 +25,9 @@ vector<double> pagerank(upcxx::dist_object<DistPCSR> &pcsr);
 void sync_dist_pcsr(upcxx::dist_object<DistPCSR>& pcsr) {
     // finish up all your inserts
     int loop_count = 0;
+    auto watchdog = std::chrono::high_resolution_clock::now();
+    bool printed = false;
+
     while (pcsr->outstanding_rpcs != 0 || !pcsr->rq_queue.empty() || pcsr->redistributing) {
         /*if (upcxx::rank_me() == 0) {
             if (pcsr->redistributing) {
@@ -45,7 +48,6 @@ void sync_dist_pcsr(upcxx::dist_object<DistPCSR>& pcsr) {
         /*if (upcxx::rank_me() == 0) {
             cout << "finished progress" << endl;
         }*/
-        loop_count += 1;
     }
     
     // at this point, all of OUR insert futures are satisfied, OUR queue is empty, and we are not redistributing
@@ -53,6 +55,13 @@ void sync_dist_pcsr(upcxx::dist_object<DistPCSR>& pcsr) {
     while (pcsr->outstanding_rpcs != 0 || !finished_inserts.ready() || !pcsr->rq_queue.empty() || pcsr->redistributing) {
         upcxx::progress();
         flush_queue(pcsr);
+        if (std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - watchdog).count() > 15.0 && !printed) {
+            cout << "rank " << upcxx::rank_me() << "seems stuck" << endl;
+            cout << "outstanding: " << pcsr->outstanding_rpcs << endl;
+            cout << "request_queue: " << pcsr->rq_queue.size() << endl;
+            cout << "redistributing: " << pcsr->redistributing << endl; 
+            printed = true;
+        }
     }
     finished_inserts.wait();
     // if (upcxx::rank_me() == 0) cout << "reached first barrier in sync_dist_pcsr" << endl;
@@ -60,6 +69,13 @@ void sync_dist_pcsr(upcxx::dist_object<DistPCSR>& pcsr) {
     while (pcsr->outstanding_rpcs != 0 || !finished_inserts.ready() || !pcsr->rq_queue.empty() || pcsr->redistributing) {
         upcxx::progress();
         flush_queue(pcsr);
+        if (std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - watchdog).count() > 15.0 && !printed) {
+            cout << "rank " << upcxx::rank_me() << "seems stuck" << endl;
+            cout << "outstanding: " << pcsr->outstanding_rpcs << endl;
+            cout << "request_queue: " << pcsr->rq_queue.size() << endl;
+            cout << "redistributing: " << pcsr->redistributing << endl; 
+            printed = true;
+        }
     }
     finished_inserts.wait();
     // if (upcxx::rank_me() == 0) cout << "reached second barrier in sync_dist_pcsr" << endl;
@@ -80,7 +96,7 @@ int main(int argc, char** argv) {
     ifstream infile;
     int num_files = 16;
     int ranks_per_file = upcxx::rank_n() / num_files; // Make sure both of these are a power of 2.
-    infile.open("../rmat-tests/rmat-inserts-" + std::to_string(upcxx::rank_me() / ranks_per_file) + ".txt");
+    infile.open("../rmat-tests/rmat-inserts-shuffled-" + std::to_string(upcxx::rank_me() / ranks_per_file) + ".txt");
     if (!infile.is_open()) {
         cerr << "Couldn't open LiveJournal files" << endl;
         return -1;
@@ -92,7 +108,7 @@ int main(int argc, char** argv) {
     int num_edges = 1 << 29;
     int num_ranks = upcxx::rank_n();
 
-    upcxx::dist_object<DistPCSR> pcsr(DistPCSR((num_edges / num_ranks) * 2, (1 << 23) + 1000));
+    upcxx::dist_object<DistPCSR> pcsr(DistPCSR((num_edges / num_ranks) * 4, (1 << 23) + 1000));
     if (upcxx::rank_me() == 0) cout << "pma depth" << pcsr->spma.depth() << endl;
     if (upcxx::rank_me() == 0) cout << "pma size" << pcsr->spma.size() << endl; 
     if (upcxx::rank_me() == 0) cout << "finished distpcsr construction at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
@@ -147,9 +163,11 @@ int main(int argc, char** argv) {
         cout << "all inserts finished at " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - start).count() << endl;
         cout << "time spent: " << std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - commands_start).count() << endl;
     }
-    
-    start_time = std::chrono::high_resolution_clock::now();
+
+
     uint32_t vertex = 0;
+    upcxx::barrier();
+    start_time = std::chrono::high_resolution_clock::now();
     vector<int> distances = bfs(pcsr, vertex);
     end_time = std::chrono::high_resolution_clock::now();
     upcxx::barrier();
