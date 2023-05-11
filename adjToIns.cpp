@@ -3,6 +3,8 @@
 #include <fstream>
 #include <vector>
 #include <omp.h>
+#include <sstream>
+#include <string>
 
 using namespace std;
 
@@ -20,8 +22,8 @@ inline bool isSpace(char c) {
 
 int main(int argc, char* argv[]) {
     // Open files
-    std::string infileName = "./soc-LiveJournal_shuf.adj";
-    std::string outfileFormat = "./LiveJournal-inserts-{}.txt";
+    std::string infileName = "../rmat_ligra.adj";
+    std::string outfileFormat = "./rmat-tests/rmat-inserts-";
     if (argc >= 3) {
         infileName = argv[1];
         outfileFormat = argv[2];
@@ -69,7 +71,7 @@ int main(int argc, char* argv[]) {
     for (long i = 0; i < len; ++i) {
         In[i] = static_cast<uint32_t>(stoul(strings[i + 1]));
     }
-    long n = In[0];
+    n = In[0];
     long m = In[1];
 
     if (len != n + m + 2) {
@@ -80,22 +82,29 @@ int main(int argc, char* argv[]) {
     uint32_t* offsets = In + 2;
     uint32_t* edges = In + 2 + n;
 
-    #pragma omp parallel {
+    int errorFlag = 0;
+
+    #pragma omp parallel 
+    {
         int numThreads = omp_get_num_threads();
         int thisThread = omp_get_thread_num();
         ofstream outfile;
-        outfile.open(std::format(outfileFormat, thisThread));
+
+        outfile.open(outfileFormat + std::to_string(thisThread) + ".txt");
         if (!outfile.is_open()) {
             cerr << "Couldn't open " << argv[2] << endl;
-            return -1; 
+            errorFlag = -1; 
         }
 
-        uint32_t currInVertex = 0;
-        for (long j = thisThread; j < m; j += numThreads) {
-            while (offsets[currInVertex + 1] <= j) {
-                currInVertex++;
+        if (errorFlag == 0) {
+            uint32_t currInVertex = 0;
+            for (long j = thisThread; j < m; j += numThreads) {
+                while (offsets[currInVertex + 1] <= j) {
+                    currInVertex++;
+                }
+                outfile << make_edge_tuple(currInVertex, edges[j]) << '\n';
             }
-            outfile << make_edge_tuple(currInVertex, edges[j]) << '\n';
         }
     }
+    return errorFlag;
 }
