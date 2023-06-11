@@ -1,3 +1,0 @@
-/global/homes/j/jyou12/267-pma-project/build/CMakeFiles/main_dist_pcsr.dir
-/global/homes/j/jyou12/267-pma-project/build/CMakeFiles/edit_cache.dir
-/global/homes/j/jyou12/267-pma-project/build/CMakeFiles/rebuild_cache.dir

@@ -3,3 +3,4 @@
 build/*
 rmat-tests/*
 lj-tests/*
+tests/*
