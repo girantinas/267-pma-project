@@ -1,4 +1,4 @@
-#include <chrono>
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -9,80 +9,118 @@
 #include <vector>
 #include <fstream> 
 #include <sstream>
+#include <random>
 
 #include "set_pma.hpp"
 // #include "butil.hpp"
 
 using namespace std;
 
+mt19937 rng(4);
+
+bool insert(SetPMA& pma, set<uint64_t>& reference) {
+    uint64_t value = rng();
+    bool resized = pma.insert(value);
+    reference.insert(value);
+    return resized;
+}
+
+uint64_t find_value_in_set(set<uint64_t>& reference) {
+    assert(reference.size() > 0);
+    auto it = reference.end();
+    while (it == reference.end()) {
+        uint64_t larger = rng();
+        it = reference.lower_bound(larger);
+    }
+
+    uint64_t value_in_set = *it;
+    return value_in_set;
+}
+
+uint64_t find_value_not_in_set(set<uint64_t>& reference) {
+    uint64_t value_not_in_set;
+    auto it = reference.begin();
+    while (it != reference.end()) {
+        value_not_in_set = rng();
+        it = reference.find(value_not_in_set);
+    }
+
+    return value_not_in_set;
+}
+
+void test_query_hit(SetPMA& pma, set<uint64_t>& reference) {
+    uint64_t value_in_set = find_value_in_set(reference);
+    assert(reference.find(value_in_set) != reference.end());
+    assert(pma.query(value_in_set));
+}
+
+void test_query_miss(SetPMA& pma, set<uint64_t>& reference) {
+    uint64_t value_not_in_set = find_value_not_in_set(reference);
+    assert(reference.find(value_not_in_set) == reference.end());
+    assert(!pma.query(value_not_in_set));
+}
+
+void test_range_sum(SetPMA& pma, set<uint64_t>& reference) {
+    uint64_t range_start = 0;
+    uint64_t range_end = -2;
+    if (range_start > range_end) {
+        std::swap(range_start, range_end);
+    }
+
+    uint64_t pmaResult = pma.range_sum(range_start, range_end);
+    auto set_it_start = reference.lower_bound(range_start);
+    auto set_it_end = reference.upper_bound(range_end);
+    uint64_t setSum = 0;
+    for (auto it = set_it_start; it != set_it_end; it++) {
+        setSum += *it;
+    }
+
+    if (pmaResult != setSum) {
+        cerr << "Mismatch in range query: PMA returned " << pmaResult
+                << " but ordered set returned " << setSum << endl;
+        assert(false);
+    }
+}
+
+void test_contents(SetPMA& pma, set<uint64_t>& reference) {
+    vector<uint64_t> all_values = pma.get_min_range(0, pma.size());
+    assert(all_values.size() == reference.size()); 
+    assert(std::equal(all_values.begin(), all_values.end(), reference.begin(), reference.end()));
+}
+
 int main(int argc, char** argv) {
-    ifstream infile;
-    ofstream outfile;
-    if (argc < 2) {
-        infile.open("benchmark_inserts.txt");
-        if (!infile.is_open()) {
-            cerr << "Couldn't open benchmark_inserts.txt" << endl;
-            return -1;
-        }
-    } else {
-        infile.open(argv[1]);
-        if (!infile.is_open()) {
-            cerr << "Couldn't open " << argv[1] << endl;
-            return -1;
-        }
-    }
-
-    if (argc >= 3) {
-        outfile.open(argv[2]); // Use "benchmark_output.txt" or something like that 
-        if (!outfile.is_open()) {
-            cerr << "Couldn't open " << argv[2] << endl;
-            return -1;
-        }
-    }
-
-    bool write_output = outfile.is_open();
+    const int NUM_ITERATIONS = 5e6;
     
-    string line;
+    std::uniform_real_distribution<> actionDis(0, 1);
+    std::uniform_real_distribution<> existsDis(0, 1);
+    
+    SetPMA pma(1 << 8);
+    set<uint64_t> reference;
+    
+    for (int i = 0 ; i < NUM_ITERATIONS; i++) {
+        double action = actionDis(rng);
+        if (action < 0.6) { // Insert with probability 0.6
+            bool resized = insert(pma, reference);
+            if (resized) {
+                cout << "Testing contents after resize" << endl;
+                test_range_sum(pma, reference);
+                test_contents(pma, reference);
+            }
+            
+        } else if (action < 0.8) { // Point query (hit) with probability 0.1
+            if (existsDis(rng) < 0.5 && !reference.empty()) {
+                test_query_hit(pma, reference);
+            } else { // Point query (miss) with probability 0.1
+                test_query_miss(pma, reference);
+            }
+        } else { // Range query with probability 0.2
+            test_range_sum(pma, reference);
+        }
 
-    SetPMA pma(1 << 22);
-    int num_range_queries = 1;
-    int line_num = 0;
-    while (getline(infile, line)) {
-        istringstream iss(line);
-        string command;
-        iss >> command;
-        if (command == "PUT") {
-            uint64_t insert_num;
-            iss >> insert_num;
-            // cout << "put(" << insert_num << ")" << endl;
-            pma.insert(insert_num);
-        } else if (command == "RANGE_QUERY") {
-            uint64_t range_start, range_end;
-            iss >> range_start >> range_end;
-            // cout << "range query(" << range_start << "," << range_end << ")" << ", number " << num_range_queries << endl;
-            uint64_t result = pma.range_sum(range_start, range_end);
-            if (write_output) {
-                outfile << result << endl;
-            }
-            num_range_queries++;
-        } else if (command == "QUERY_ALL") {
-            cout << "query all" << endl;
-            uint64_t result = pma.range_sum(0, INT_MAX - 1);
-            if (write_output) {
-                outfile << result << endl;
-            }
-        } else {
-            cerr << "Received unsupported command" << endl;
+        if (i % 10000 == 0) {
+            cout << i << endl;
         }
-        
-        if (line_num % 100000 == 0 || line_num > 2700000 && line_num % 10000 == 0) {
-            cout << "line " << line_num << endl;
-        }
-        line_num += 1;
     }
-    cout << "done!" << endl;
-    infile.close();
-    outfile.close();
-
-    return 0;
+    
+    test_contents(pma, reference);
 }

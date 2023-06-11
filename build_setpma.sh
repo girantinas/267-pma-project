@@ -1,1 +1,1 @@
-g++ -std=c++17 -O3 main_setpma.cpp && ./a.out ./tests/setpma_benchmark_inserts.txt ./tests/setpma_benchmark_outserts.txt > log.txt && diff tests/setpma_benchmark_outserts.txt tests/setpma_benchmark_solution.txt > diff-log.txt
+g++ -std=c++17 -O3 main_setpma.cpp -o build/setpma-test && ./build/setpma-test
