@@ -1,4 +1,4 @@
-#include "../data-structures/dist_pcsr.hpp"
+#include "../data-structures/dist_pcsr2.hpp"
 #include "../data-structures/graph.hpp"
 
 #include <upcxx/upcxx.hpp>
@@ -8,68 +8,38 @@
 
 mt19937 rng(42);
 
-// fully synchronizes a distributed PCSR
-void sync_dist_pcsr(upcxx::dist_object<DistPCSR>& pcsr) {
-    // finish up all your inserts
-    int loop_count = 0;
-    auto watchdog = std::chrono::high_resolution_clock::now();
-    bool printed = false;
-
-    while (pcsr->outstanding_rpcs != 0 || !pcsr->rq_queue.empty() || pcsr->redistributing) {
-        /*if (upcxx::rank_me() == 0) {
-            if (pcsr->redistributing) {
-                cout << "redistributing..." << endl;
-            }
-            else if (pcsr->outstanding_rpcs != 0) {
-                cout << "waiting on rpcs, " << pcsr->outstanding_rpcs << " remaining" << endl;
-            }
-            else {
-                cout << "request queue empty" << endl;
-            }
-        }*/
-        flush_queue(pcsr);
-        /*if (upcxx::rank_me() == 0) {
-            cout << "flushed queue" << endl;
-        }*/
-        upcxx::progress();
-        /*if (upcxx::rank_me() == 0) {
-            cout << "finished progress" << endl;
-        }*/
+template <typename T>
+void assertEqual(T actual, T expected) {
+    if (actual != expected) {
+        cout << "Expected " << expected << " got " << actual << endl;
+        exit(-1);
     }
-    
-    // at this point, all of OUR insert futures are satisfied, OUR queue is empty, and we are not redistributing
-    auto finished_inserts = upcxx::barrier_async();
-    while (pcsr->outstanding_rpcs != 0 || !finished_inserts.ready() || !pcsr->rq_queue.empty() || pcsr->redistributing) {
-        upcxx::progress();
-        flush_queue(pcsr);
-        if (std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - watchdog).count() > 15.0 && !printed) {
-            cout << "rank " << upcxx::rank_me() << "seems stuck" << endl;
-            cout << "outstanding: " << pcsr->outstanding_rpcs << endl;
-            cout << "request_queue: " << pcsr->rq_queue.size() << endl;
-            cout << "redistributing: " << pcsr->redistributing << endl; 
-            printed = true;
-        }
-    }
-    finished_inserts.wait();
-    // if (upcxx::rank_me() == 0) cout << "reached first barrier in sync_dist_pcsr" << endl;
-    finished_inserts = upcxx::barrier_async();
-    while (pcsr->outstanding_rpcs != 0 || !finished_inserts.ready() || !pcsr->rq_queue.empty() || pcsr->redistributing) {
-        upcxx::progress();
-        flush_queue(pcsr);
-        if (std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - watchdog).count() > 15.0 && !printed) {
-            cout << "rank " << upcxx::rank_me() << "seems stuck" << endl;
-            cout << "outstanding: " << pcsr->outstanding_rpcs << endl;
-            cout << "request_queue: " << pcsr->rq_queue.size() << endl;
-            cout << "redistributing: " << pcsr->redistributing << endl; 
-            printed = true;
-        }
-    }
-    finished_inserts.wait();
-    // if (upcxx::rank_me() == 0) cout << "reached second barrier in sync_dist_pcsr" << endl;
 }
 
 int main() {
-    DistPCSR pcsr = DistPCSR::make_dist_pcsr(1 << 10);
+    upcxx::init();
+    upcxx::dist_object<DistPCSR> pcsr = DistPCSR::make_dist_pcsr(1 << 10);
+    if (upcxx::rank_me() == 0) {
+        pcsr->insert_edge(0, 1);
+        pcsr->insert_edge(6, 3);
+    }
+    else {
+        pcsr->insert_edge(1, 7);
+        pcsr->insert_edge(8, 9);
+    }
+
+    upcxx::barrier();
+    pcsr->flush_queue();
+
+    if (upcxx::rank_me() == 0) {
+        assertEqual(pcsr->query_edge(0, 1).wait(), true);
+        assertEqual(pcsr->query_edge(1, 7).wait(), true);
+        assertEqual(pcsr->query_edge(6, 3).wait(), true);
+        assertEqual(pcsr->query_edge(8, 9).wait(), true);
+    }
+    upcxx::finalize();
+
+    /*
     Graph reference;
     const int NUM_ITERATIONS = 1e4;
     const int INSERT_PHASE_SIZE = 1e4;
@@ -117,4 +87,5 @@ int main() {
             cout << i << endl;
         }
     }
+    */
 }

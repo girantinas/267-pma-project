@@ -2,6 +2,7 @@
 
 // #include <upcxx/upcxx.hpp>
 // #include "butil.hpp"
+#include "utils.hpp"
 #include <climits>
 #include <cmath>
 #include <iostream>
@@ -19,8 +20,8 @@ class SetPMA {
         static constexpr uint64_t INT_NULL = UINT64_MAX;
         static constexpr uint64_t INVALID_IDX = UINT64_MAX;
         SetPMA(uint64_t size);
-        SetPMA(uint64_t size, double leaf_max);
-        SetPMA(uint64_t size, double leaf_max, bool resize_allowed);
+        SetPMA(uint64_t size, double root_density);
+        SetPMA(uint64_t size, double root_density, bool resize_allowed);
         
         uint64_t capacity();
         uint64_t size();
@@ -33,7 +34,7 @@ class SetPMA {
         vector<uint64_t> get_min_range(uint64_t left, uint64_t right);
         void swap_data(std::vector<uint64_t>& temp);
         void range(uint64_t left, uint64_t right, range_func& op);
-        double _leaf_max = 0.75;
+        double _root_density = 0.75;
 
         std::vector<uint64_t> data;
         uint64_t _capacity;
@@ -68,20 +69,20 @@ SetPMA::SetPMA(uint64_t size) {
     _max_index = INVALID_IDX;
 }
 
-SetPMA::SetPMA(uint64_t size, double leaf_max) {
+SetPMA::SetPMA(uint64_t size, double root_density) {
     data.resize(size, INT_NULL);
     _capacity = size;
     _size = 0;
-    _leaf_max = leaf_max;
+    _root_density = root_density;
     _resize_allowed = true;
     _max_index = INVALID_IDX;
 }
 
-SetPMA::SetPMA(uint64_t size, double leaf_max, bool resize_allowed) {
+SetPMA::SetPMA(uint64_t size, double root_density, bool resize_allowed) {
     data.resize(size, INT_NULL);
     _capacity = size;
     _size = 0;
-    _leaf_max = leaf_max;
+    _root_density = root_density;
     _resize_allowed = resize_allowed;
     _max_index = INVALID_IDX;
 }
@@ -123,19 +124,6 @@ void SetPMA::swap_data(std::vector<uint64_t>& temp) {
     redistribute(0, _capacity, density_count);
     // cout << _max_index << endl;
     // cout << data[_max_index] << endl;
-}
-
-uint64_t MSSB(uint64_t x) {
-    uint64_t i = 0;
-    while (x != 0) {
-        x = x >> 1;
-        ++i;
-    }
-    return i - 1;
-}
-
-uint64_t next_power_of_2(uint64_t x) {
-    return 1 << (MSSB(x) + 1);
 }
 
 uint64_t SetPMA::capacity() { return _capacity; } // N
@@ -260,7 +248,7 @@ void SetPMA::slide_right(uint64_t index) {
 
 double SetPMA::get_upper_density_bound(int level) {
     double max_upper_limit = (double) (logN() - 1) / logN();
-    return max_upper_limit - (double) level / depth() * (max_upper_limit - _leaf_max);
+    return max_upper_limit - (double) level / depth() * (max_upper_limit - _root_density);
 }
 
 bool SetPMA::insert(uint64_t key) {

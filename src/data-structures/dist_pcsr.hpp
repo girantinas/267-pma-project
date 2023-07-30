@@ -215,7 +215,7 @@ void DistPCSR::insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t fr
     else {
         uint64_t edge = make_edge_tuple(from, to);
         spma.insert(edge);
-        if (spma.size() > (uint32_t) ((spma._leaf_max - spma.depth() * 0.01) * spma.size())) {
+        if (spma.size() > (uint32_t) ((spma._leaf_max - spma.depth() * 0.01) * spma.capacity())) {
             redistribute(pcsr);
         }
     }

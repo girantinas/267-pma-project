@@ -2,10 +2,10 @@
 module load contrib/1.0
 module load upcxx/2023.3.0
 cmake --build .
-# export GASNET_BACKTRACE=1
+export GASNET_BACKTRACE=1
 export GASNET_OFI_RECEIVE_BUFF_SIZE=single
 # export GASNET_BACKTRACE_SIGNAL=SIGUSR1
 export UPCXX_SEGMENT_MB=512
 
 # salloc -N 16 -A mp309 -t 5:00 -q regular -C cpu srun -N 16 -n 1024 ./main_dist_pcsr
-srun -N 2 -n 128 ./main_dist_pcsr
+srun -N 1 -n 2 ./main_dist_pcsr

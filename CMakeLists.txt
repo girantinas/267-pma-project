@@ -3,7 +3,6 @@ project(hw3 LANGUAGES CXX)
 
 find_package(UPCXX REQUIRED)
 
-# Build the kmer_hash executable
 add_executable(main_dist_pcsr src/main/main_dist_pcsr.cpp)
 target_link_libraries(main_dist_pcsr PRIVATE UPCXX::upcxx)
 # target_compile_definitions(main_dist_pcsr PRIVATE "KMER_LEN=19")
