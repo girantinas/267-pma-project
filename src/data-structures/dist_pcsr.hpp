@@ -14,13 +14,14 @@
 #include <functional>
 #include <sstream>
 #include <unordered_set>
+#include <fstream>
 #include "set_pma.hpp"
 
 using namespace std;
 using namespace std::chrono;
 #define timestamp_endl "    " << (duration_cast<milliseconds>(system_clock::now().time_since_epoch()) - reference_time).count() << endl;
 milliseconds reference_time;
-ofstream redistribute_log;
+// ofstream redistribute_log;
 
 struct Insert {
     uint32_t from;
@@ -106,7 +107,7 @@ uint32_t DistPCSR::size() {
 }
 
 uint32_t DistPCSR::num_elements() {
-    return spma._num_elements;
+    return spma.size();
 }
 
 DistPCSR::DistPCSR(uint32_t size, uint64_t max_val) : spma(SetPMA(size, INIT_LEAF_MAX, false)) {
@@ -214,7 +215,7 @@ void DistPCSR::insert_edge_local(upcxx::dist_object<DistPCSR>& pcsr, uint32_t fr
     else {
         uint64_t edge = make_edge_tuple(from, to);
         spma.insert(edge);
-        if (spma._num_elements > (uint32_t) ((spma._leaf_max - spma.depth() * 0.01) * spma.size())) {
+        if (spma.size() > (uint32_t) ((spma._leaf_max - spma.depth() * 0.01) * spma.size())) {
             redistribute(pcsr);
         }
     }
@@ -328,7 +329,7 @@ uint32_t redis_count(
             [](upcxx::dist_object<DistPCSR>& pcsr) {
                 pcsr->redistributing = true;
                 // pcsr->spma.print_pma(redistribute_log);
-                return make_pair(pcsr->spma._num_elements, upcxx::rank_me());
+                return make_pair(pcsr->spma.size(), upcxx::rank_me());
             },
             pcsr
         ).then(
@@ -439,7 +440,7 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
 
     cout << "rank " << upcxx::rank_me() << " redistributing!" << endl;
     
-    uint32_t total_elements = pcsr->spma._num_elements;
+    uint32_t total_elements = pcsr->spma.size();
     vector<uint32_t> element_counts(upcxx::rank_n(), 0);
     uint32_t n_procs = 1;
     uint32_t start_proc = upcxx::rank_me();
@@ -563,7 +564,7 @@ void redistribute(upcxx::dist_object<DistPCSR>& pcsr) {
 void DistPCSR::print_dist_pcsr() {
     ofstream outfile;
     outfile.open("final_" + std::to_string(upcxx::rank_me()) + ".txt");
-    outfile << "Proc " << upcxx::rank_me() << " ends with " << spma._num_elements << " elements, has range " << \
+    outfile << "Proc " << upcxx::rank_me() << " ends with " << spma.size() << " elements, has range " << \
         get<0>(my_range) << "," << get<1>(my_range) << ")" << timestamp_endl;
     int i = 0;
     for (auto range : cached_ranges) {
