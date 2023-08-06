@@ -354,7 +354,7 @@ vector<pair<uint32_t, vector<uint32_t>>> get_redistribute_commands(
     vector<uint32_t>& element_counts, 
     uint32_t start_proc, 
     uint32_t num_procs, 
-    uint32_t total_elements
+    uint64_t total_elements
 ) {
     
     vector<pair<uint32_t, vector<uint32_t>>> command_lists;
@@ -369,7 +369,7 @@ vector<pair<uint32_t, vector<uint32_t>>> get_redistribute_commands(
         while (elements > 0) {
             uint32_t remaining_elems = element_counts[remote_proc] - current_local_position;
             if (remaining_elems == 0) {
-                
+
                 remote_proc += 1;
                 current_local_position = 0;
             } else if (remaining_elems >= elements) {
