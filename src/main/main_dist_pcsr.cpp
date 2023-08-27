@@ -18,7 +18,7 @@ void assertEqual(T actual, T expected) {
 
 int main() {
     upcxx::init();
-    upcxx::dist_object<DistPCSR> pcsr = DistPCSR::make_dist_pcsr(1 << 10);
+    upcxx::dist_object<DistPCSR> pcsr = DistPCSR::make_dist_pcsr(1 << 20);
 
     /*
     if (upcxx::rank_me() == 0) {
@@ -44,7 +44,7 @@ int main() {
 
     Graph reference;
     const int NUM_ITERATIONS = 1e3;
-    const int INSERT_PHASE_SIZE = 1e2;
+    const int INSERT_PHASE_SIZE = 1e4;
     const int QUERY_PHASE_SIZE = 1e2;
 
     std::uniform_int_distribution<int> random_server(0, upcxx::rank_n());
@@ -64,10 +64,26 @@ int main() {
                 reference.insert(from, to);
                 pcsr->insert_edge(from, to);
             }
-            for (int stupid = 0; stupid < 5; stupid++) {
+            
+            for (int i = 0; i < 5; i += 1) {
                 pcsr->flush_queue();
                 upcxx::barrier();
             }
+
+            // A, B, C
+            // inactivity = no outgoing RPCs, not redistributing, nothing in insert queue
+            // 1. Flush queue
+            // 2. Upon inactivity, write 1 to your inactivity flag in processor 0 and spin (making user-level progress)
+            // (For processor 0), upon inactivity, check for any inactivity flag being 0 
+            // 3. Spin (making user-level progress) until all inactivity flags are 1 (i.e. you think no processor is still active)
+            ////////////////////
+            //      RMA all processors for their completeness flag (length of flush_queue is 0) again (and stop them from making user-level progress by spinning)
+            //      If any flag is 0
+            //         Set all flags to 0
+            //         RMA to all processors that they should exit spin, redo steps 1 and 2
+            //      If all flags are 1
+            //         RMA to all processors that they are done with insert phase
+            
             // sync_dist_pcsr(pcsr);
         }
         else {

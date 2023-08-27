@@ -44,7 +44,7 @@ class DistPCSR {
         upcxx::dist_object<DistPCSR> *dist_pcsr_obj;
         SetPMA pma;
         bool redistributing = false;
-        int outstanding_rpcs;
+        int outstanding_inserts;
         
         pair<uint64_t, uint64_t> my_range;
         std::vector<range_t> edge_ranges;
@@ -155,12 +155,17 @@ void DistPCSR::insert_edge(edge_t edge) {
         return;
     }
 
+    outstanding_inserts += 1;
     upcxx::rpc(rank,
         [](upcxx::dist_object<DistPCSR>& local_pcsr, edge_t edge) {
             local_pcsr->insert_edge(edge);
         },
         *dist_pcsr_obj, edge
-    ).wait();
+    ).then(
+        [this]() {
+            outstanding_inserts -= 1;
+        }
+    );
 }
 
 void DistPCSR::insert_edge_local(edge_t edge) {
@@ -240,23 +245,27 @@ void DistPCSR::redistribute() {
     send_all_commands(lowest_proc, command_lists);    
     swap_all_data(lowest_proc, redis_n_procs, edge_ranges);
 
+    upcxx::future<> update_ranges_fut = upcxx::make_future();
     for (uint32_t i = 0; i < upcxx::rank_n(); i += 1) {
         if (i >= lowest_proc && i < lowest_proc + redis_n_procs) {
             continue;
         }
         // pcsr->outstanding_rpcs += 1;
-        upcxx::rpc(i, [](upcxx::dist_object<DistPCSR>& pcsr, const vector<range_t>& updated_ranges){
+        auto f = upcxx::rpc(i, [](upcxx::dist_object<DistPCSR>& pcsr, const vector<range_t>& updated_ranges){
             for (uint32_t i = 0; i < updated_ranges.size(); i += 1) {
                 if (std::get<0>(pcsr->edge_ranges[i]) < std::get<0>(updated_ranges[i])) {
                     pcsr->edge_ranges[i] = updated_ranges[i];
                 }
             }
-        }, *dist_pcsr_obj, edge_ranges).wait(); /*.then( // TODO: Make this not a wait
+        }, *dist_pcsr_obj, edge_ranges); /*.then( // TODO: Make this not a wait
             [&pcsr]() {
                 pcsr->outstanding_rpcs -= 1;
             }
         );*/
+        update_ranges_fut = upcxx::when_all(update_ranges_fut, f);
     }
+
+    update_ranges_fut.wait();
 
     redistributing = false;
     release_redis_lock();
@@ -271,17 +280,18 @@ uint32_t DistPCSR::redis_count(
     
     upcxx::future<> count_future = upcxx::make_future();
     for (uint32_t i = 0; i < num_procs_contact; i += 1) {
-        // cout << "sp: " << start_proc << endl;
+        cout << "sp: " << start_proc << endl;
         if (start_proc + i == upcxx::rank_me()) {
             cout << "We're rpc'ing ourselves" << endl;
         }
         upcxx::future<> fut = upcxx::rpc(
             start_proc + i,
             [](upcxx::dist_object<DistPCSR>& pcsr) {
-                if (pcsr->redistributing) {
-                    cerr << "Already redistributing when redistribute requested" << endl;
+                /*if (pcsr->redistributing) {
+                    cerr << "Already redistributing when redistribute requested: " << upcxx::rank_me() << endl;
                     exit(-1);
-                }
+                }*/
+                cout << "asserting redistributing: " << upcxx::rank_me() << endl;
                 pcsr->redistributing = true;
                 // pcsr->pma.print_pma(redistribute_log);
                 return make_pair(pcsr->pma.size(), upcxx::rank_me());
@@ -313,12 +323,12 @@ std::tuple<uint64_t, uint32_t, uint32_t> DistPCSR::gather_redis_counts(vector<ui
     while (total_elements >= get_upper_density_bound(level) * redis_n_procs * pma.capacity() && redis_n_procs < upcxx::rank_n()) {
         redis_n_procs *= 2;
         uint32_t new_proc = (lowest_proc / redis_n_procs) * redis_n_procs;
-        // cout << "np:" << new_proc << "lp: " << lowest_proc << endl;
+        cout << "np:" << new_proc << "lp: " << lowest_proc << endl;
         if (new_proc < lowest_proc) {
             total_elements += redis_count(new_proc, redis_n_procs / 2, element_counts);
         } else { // new_proc == lowest_proc
-            // cout << "?" << new_proc + redis_n_procs / 2 << endl;
-            // cout << "rp:" << redis_n_procs << endl;
+            cout << "?" << new_proc + redis_n_procs / 2 << endl;
+            cout << "rp:" << redis_n_procs << endl;
             total_elements += redis_count(new_proc + redis_n_procs / 2, redis_n_procs / 2, element_counts);
         }
         lowest_proc = new_proc;
@@ -402,8 +412,9 @@ void DistPCSR::send_all_commands(uint32_t lowest_proc, vector<vector<Command>>& 
         );
 
         all_finished = upcxx::when_all(all_finished, f);
-        all_finished.wait();
     }
+
+    all_finished.wait();
 }
 
 upcxx::future<> DistPCSR::retrieve_command(Command command) {
@@ -432,9 +443,9 @@ upcxx::future<> DistPCSR::retrieve_command(Command command) {
 
 void DistPCSR::swap_all_data(int lowest_proc, int num_procs, vector<range_t>& updated_ranges) {
     upcxx::future<> all_team_swapped = upcxx::make_future();
-    int team_leader;
+    int team_leader = upcxx::rank_me();
     for (uint32_t i = lowest_proc; i < lowest_proc + num_procs; ++i) {
-        auto swap_local = upcxx::rpc(i, [team_leader=upcxx::rank_me()](upcxx::dist_object<DistPCSR>& pcsr, const vector<range_t>& updated_ranges){
+        auto swap_local = upcxx::rpc(i, [team_leader](upcxx::dist_object<DistPCSR>& pcsr, const vector<range_t>& updated_ranges){
             for (uint32_t i = 0; i < updated_ranges.size(); i += 1) {
                 // check if updated_ranges is newer than edge_ranges
                 if (std::get<0>(pcsr->edge_ranges[i]) < std::get<0>(updated_ranges[i])) {
@@ -443,7 +454,9 @@ void DistPCSR::swap_all_data(int lowest_proc, int num_procs, vector<range_t>& up
             }
             pcsr->pma.swap_data(temp);
             // pcsr->pma.print_pma(redistribute_log);
+            cout << "team leader: " << team_leader << endl;
             if (upcxx::rank_me() != team_leader) { // team leader will set their own redistributing flag to false later
+                cout << "deasserting redistributing: " << upcxx::rank_me() << endl;
                 pcsr->redistributing = false;
             }
         }, *dist_pcsr_obj, updated_ranges);
