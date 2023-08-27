@@ -1,5 +1,5 @@
 #include "../data-structures/dist_pcsr2.hpp"
-#include "../data-structures/graph.hpp"
+#include "../data-structures/set-graph.hpp"
 
 #include <upcxx/upcxx.hpp>
 #include <chrono>
@@ -42,13 +42,13 @@ int main() {
     */
 
 
-    Graph reference;
-    const int NUM_ITERATIONS = 1e3;
+    SetGraph reference;
+    const int NUM_ITERATIONS = 1e5;
     const int INSERT_PHASE_SIZE = 1e4;
     const int QUERY_PHASE_SIZE = 1e2;
 
     std::uniform_int_distribution<int> random_server(0, upcxx::rank_n());
-    std::uniform_int_distribution<int> random_vertex(0, 1 << 10);
+    std::uniform_int_distribution<int> random_vertex(0, 1 << 24);
     std::uniform_real_distribution<> existsDis(0, 1);
 
     for (int i = 0; i < NUM_ITERATIONS; i++) {
@@ -106,7 +106,7 @@ int main() {
             }
         }
 
-        if (i % 10000 == 0) {
+        if (i % 100 == 0 && upcxx::rank_me() == 0) {
             cout << i << endl;
         }
     }

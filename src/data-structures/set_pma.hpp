@@ -324,7 +324,7 @@ void SetPMA::gather(uint64_t index, uint64_t len, uint64_t density_count) {
 
     // Fill with nulls, because all of our data is in temp
     if (index == 0 && len == capacity()) {
-        cout << "Temp size: " << _temp.size() << endl;
+        // cout << "Temp size: " << _temp.size() << endl;
         std::fill(data.begin(), data.end(), INT_NULL);
     }
 }

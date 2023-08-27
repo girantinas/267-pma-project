@@ -14,7 +14,7 @@ struct Command {
     uint32_t target_rank;
 };
         
-class DistPCSR {
+class DistPCSR : public Graph {
     public:
         static upcxx::dist_object<DistPCSR> make_dist_pcsr(int initial_capacity);
         int capacity();
@@ -61,6 +61,7 @@ class DistPCSR {
         vector<vector<Command>> get_redistribute_commands(vector<uint64_t>& element_counts, uint32_t start_proc, uint32_t num_procs, uint64_t total_elements);
         upcxx::future<> retrieve_command(Command command);
         void swap_all_data(int lowest_proc, int num_procs, vector<range_t>& updated_ranges);
+        make_vertex_ranges();
 };
 
 
@@ -198,9 +199,10 @@ void DistPCSR::acquire_redis_lock() {
         upcxx::progress();
         upcxx::future<int64_t> lock_req = ad.compare_exchange(redis_lock, 0, 1, std::memory_order_seq_cst);
         while(!lock_req.ready()) {
-            // may want to call upcxx::progress()
+            upcxx::progress(); // may want to call upcxx::progress()
         }
         got_lock = !lock_req.result();
+        cout << "processor " << upcxx::rank_me() << " got lock: " << got_lock << endl;
     }
 }
 
@@ -209,14 +211,16 @@ void DistPCSR::release_redis_lock() {
 }
 
 void DistPCSR::redistribute() {
+    cout << "Processor " << upcxx::rank_me() << " tried to acquire lock." << endl;
     redistributing = true;
     acquire_redis_lock();
 
-    cout << "Redistributing" << endl;
+    cout << "Processor " << upcxx::rank_me() << " is redistributing." << endl;
 
     // if someone redistributed with us, redistribute is no longer required (they should have reduced number of elements held in us)
     if (!redistributing) {
         release_redis_lock();
+        cout << "Processor " << upcxx::rank_me() << " released lock, no need to redistribute." << endl;
         return;
     }
 
@@ -238,7 +242,7 @@ void DistPCSR::redistribute() {
     vector<uint64_t> element_counts(upcxx::rank_n(), 0);
     tie(total_elements, redis_n_procs, lowest_proc) = gather_redis_counts(element_counts);
     
-    cout << "redistributing with [" << lowest_proc << ", " << lowest_proc + redis_n_procs << ")" << endl; 
+    // cout << "redistributing with [" << lowest_proc << ", " << lowest_proc + redis_n_procs << ")" << endl; 
     
     auto command_lists = get_redistribute_commands(element_counts, lowest_proc, redis_n_procs, total_elements);
 
@@ -268,7 +272,9 @@ void DistPCSR::redistribute() {
     update_ranges_fut.wait();
 
     redistributing = false;
+    cout << "Finished redistributing" << endl;
     release_redis_lock();
+    cout << "Processor " << upcxx::rank_me() << " released lock after redistributing" << endl;
 }
 
 uint32_t DistPCSR::redis_count(
@@ -280,7 +286,7 @@ uint32_t DistPCSR::redis_count(
     
     upcxx::future<> count_future = upcxx::make_future();
     for (uint32_t i = 0; i < num_procs_contact; i += 1) {
-        cout << "sp: " << start_proc << endl;
+        // cout << "sp: " << start_proc << endl;
         if (start_proc + i == upcxx::rank_me()) {
             cout << "We're rpc'ing ourselves" << endl;
         }
@@ -291,7 +297,7 @@ uint32_t DistPCSR::redis_count(
                     cerr << "Already redistributing when redistribute requested: " << upcxx::rank_me() << endl;
                     exit(-1);
                 }*/
-                cout << "asserting redistributing: " << upcxx::rank_me() << endl;
+                // cout << "asserting redistributing: " << upcxx::rank_me() << endl;
                 pcsr->redistributing = true;
                 // pcsr->pma.print_pma(redistribute_log);
                 return make_pair(pcsr->pma.size(), upcxx::rank_me());
@@ -323,12 +329,12 @@ std::tuple<uint64_t, uint32_t, uint32_t> DistPCSR::gather_redis_counts(vector<ui
     while (total_elements >= get_upper_density_bound(level) * redis_n_procs * pma.capacity() && redis_n_procs < upcxx::rank_n()) {
         redis_n_procs *= 2;
         uint32_t new_proc = (lowest_proc / redis_n_procs) * redis_n_procs;
-        cout << "np:" << new_proc << "lp: " << lowest_proc << endl;
+        // cout << "np:" << new_proc << "lp: " << lowest_proc << endl;
         if (new_proc < lowest_proc) {
             total_elements += redis_count(new_proc, redis_n_procs / 2, element_counts);
         } else { // new_proc == lowest_proc
-            cout << "?" << new_proc + redis_n_procs / 2 << endl;
-            cout << "rp:" << redis_n_procs << endl;
+            // cout << "?" << new_proc + redis_n_procs / 2 << endl;
+            // cout << "rp:" << redis_n_procs << endl;
             total_elements += redis_count(new_proc + redis_n_procs / 2, redis_n_procs / 2, element_counts);
         }
         lowest_proc = new_proc;
@@ -454,9 +460,9 @@ void DistPCSR::swap_all_data(int lowest_proc, int num_procs, vector<range_t>& up
             }
             pcsr->pma.swap_data(temp);
             // pcsr->pma.print_pma(redistribute_log);
-            cout << "team leader: " << team_leader << endl;
+            // cout << "team leader: " << team_leader << endl;
             if (upcxx::rank_me() != team_leader) { // team leader will set their own redistributing flag to false later
-                cout << "deasserting redistributing: " << upcxx::rank_me() << endl;
+                // cout << "deasserting redistributing: " << upcxx::rank_me() << endl;
                 pcsr->redistributing = false;
             }
         }, *dist_pcsr_obj, updated_ranges);
@@ -464,4 +470,214 @@ void DistPCSR::swap_all_data(int lowest_proc, int num_procs, vector<range_t>& up
     }
     
     all_team_swapped.wait();
+}
+
+vector<vertex_t> DistPCSR::make_vertex_ranges() {
+    vector<vertex_t> vertex_ranges;
+    for (range_t range : edge_ranges) {
+        pair<vertex_t, vertex_t> range_start = get_edge_tuple(range.second);
+        vertex_ranges.push_back(range_start.first);
+    }
+    return vertex_ranges;
+}
+
+uint32_t DistPCSR::vertex_target_rank(vector<vertex_t>& vertex_ranges, vertex_t v) {
+    int current_argmin = 0;
+    while(current_argmin < vertex_ranges.size() && vertex_ranges[current_argmin] < v) {
+        current_argmin++;
+    }
+    if (current_argmin == vertex_ranges.size()) {
+        return vertex_ranges.size() - 1;
+    } else if (vertex_ranges[current_argmin] == v) {
+        return current_argmin;
+    } else {
+        return max((current_argmin - 1), 0); // left of 0 pushed to 0
+    }
+}
+
+vector<int> DistPCSR::bfs(vertex_t source) {
+    vector<vertex_t> vertex_ranges = make_vertex_ranges(pcsr);
+    vertex_t start_vertex = vertex_ranges[upcxx::rank_me()];
+    vertex_t end_vertex = vertex_ranges[upcxx::rank_me() + 1];
+
+    uint32_t local_num_vertices = end_vertex - start_vertex;
+
+    vector<int> local_distances(local_num_vertices, -1);
+
+    if (local_num_vertices == 0) {
+        return local_distances;
+    }
+
+    if (source >= start_vertex && source < end_vertex) {
+        local_distances[source - start_vertex] = 0;
+    }
+
+    deque<vertex_t> frontier;
+    /*
+    if (upcxx::rank_me() == 0) {
+        cout << "target rank for source vertex: " << vertex_target_rank(vertex_ranges, source) << endl;
+        cout << "vertex ranges: " << endl;
+        for (int i = 0; i < upcxx::rank_n(); i += 1) {
+            cout << "proc " << i << " [" << vertex_ranges[i] << ", " << vertex_ranges[i+1] << ")" << endl;
+        }
+    }
+    */
+    if (upcxx::rank_me() == vertex_target_rank(vertex_ranges, source)) {
+        frontier.push_back(source);
+    }
+    int level = 0;
+
+    upcxx::dist_object<vector<vertex_t>> next_set_recv{vector<vertex_t>()};
+    vector<vector<vertex_t>> vertex_destinations;
+    vertex_destinations.resize(upcxx::rank_n());
+    
+    unordered_set<vertex_t> next_set;
+
+    upcxx::barrier();
+
+    while (true) {
+        if (upcxx::rank_me() == 0) cout << "level " << level << endl;
+        next_set.clear();
+        bool is_frontier_empty = frontier.empty();
+        bool all_frontiers_empty = upcxx::reduce_all(is_frontier_empty, upcxx::op_fast_bit_and).wait();
+        if (all_frontiers_empty) {
+            break;
+        }
+
+        upcxx::future<> all_futures = upcxx::make_future();
+        for (uint32_t vertex : frontier) {
+            upcxx::future<> fut = add_neighbors_to_set(pcsr, vertex, next_set);
+            all_futures = upcxx::when_all(all_futures, fut);
+        }   
+        all_futures.wait();
+
+        for (int i = 0; i < upcxx::rank_n(); i += 1) {
+            vertex_destinations[i].clear();
+        }
+
+        for (uint32_t next_vertex : next_set) {
+            int target_rank = vertex_target_rank(vertex_ranges, next_vertex);
+            vertex_destinations[target_rank].push_back(next_vertex);
+        }
+
+        (*next_set_recv).clear();
+
+        upcxx::barrier();
+
+        all_futures = upcxx::make_future();
+
+        for (uint32_t target_rank = 0; target_rank < upcxx::rank_n(); target_rank++) {
+            if (target_rank == upcxx::rank_me()) {
+                (*next_set_recv).insert((*next_set_recv).end(), vertex_destinations[target_rank].begin(), vertex_destinations[target_rank].end());
+                continue;
+            }
+            all_futures = upcxx::when_all(all_futures, upcxx::rpc(
+                target_rank, 
+                [](upcxx::dist_object<vector<uint32_t>> &next_set_recv, const vector<uint32_t>& vertices) {
+                    (*next_set_recv).insert((*next_set_recv).end(), vertices.begin(), vertices.end());
+                },
+                next_set_recv, vertex_destinations[target_rank] // Should I capture this instead?
+            ));
+
+        }
+
+        all_futures.wait();
+
+        upcxx::barrier();
+        frontier.clear();
+
+        for (uint32_t vertex : *next_set_recv) {
+            int val = local_distances[vertex - start_vertex];
+            if (local_distances[vertex - start_vertex] == -1) {
+                local_distances[vertex - start_vertex] = level + 1;
+                frontier.push_back(vertex);
+            }
+        }
+
+        level++;
+    }
+    return local_distances;
+}
+
+
+
+vector<double> SetGraph::pagerank() {
+    double epsilon = 0.0000001;
+    double damping_factor = 0.85;
+    int max_iterations = 100;
+
+    vector<double> local_pagerank(local_num_vertices, 1.0 / pcsr->num_vertices);
+    vector<double> local_prev_pagerank(local_num_vertices, 0.0);
+
+    upcxx::dist_object<vector<pair<uint32_t, double>>> contributions_recv{vector<pair<uint32_t, double>>()};
+
+    int iteration = 0;
+
+    upcxx::barrier();
+
+    vector<vector<pair<uint32_t, double>>> contributions_destinations;
+    contributions_destinations.resize(upcxx::rank_n());
+
+    while (iteration < max_iterations) {
+        if (upcxx::rank_me() == 0) { cout << "pagerank iteration " << iteration << endl; }
+        double l1_norm = 0;
+        for (int i = 0; i < local_pagerank.size(); i++) {
+            l1_norm += std::abs(local_pagerank[i] - local_prev_pagerank[i]);
+        }
+        double all_l1_norm = upcxx::reduce_all(l1_norm, upcxx::op_fast_add).wait();
+        if (all_l1_norm < epsilon) {
+            break;
+        }
+
+        vector<double> tmp = std::move(local_prev_pagerank);
+        local_prev_pagerank = std::move(local_pagerank);
+        local_pagerank = std::move(tmp);
+        
+        local_pagerank.assign(local_num_vertices, (1.0 - damping_factor) / pcsr->num_vertices);
+
+        for (int i = 0; i < upcxx::rank_n(); i += 1) {
+            contributions_destinations[i].clear();
+        }
+        
+
+        for (uint32_t vertex = start_vertex; vertex < end_vertex; vertex++) {
+            vector<uint32_t> out_edges;
+            edges(pcsr, vertex, out_edges).wait();
+            double contribution = local_prev_pagerank[vertex - start_vertex] / out_edges.size();
+            for (uint32_t neighbor : out_edges) {
+                int target_rank = vertex_target_rank(vertex_ranges, neighbor);
+                contributions_destinations[target_rank].push_back(make_pair(neighbor, contribution));
+            }
+        }
+        
+        (*contributions_recv).clear();
+
+        upcxx::barrier();
+        upcxx::future<> all_futures = upcxx::make_future();
+
+        for (int target_rank = 0; target_rank < upcxx::rank_n(); target_rank++) {
+            if (target_rank == upcxx::rank_me()) {
+                (*contributions_recv).insert((*contributions_recv).end(), contributions_destinations[target_rank].begin(), contributions_destinations[target_rank].end());
+            } else {
+                all_futures = upcxx::when_all(all_futures, 
+                upcxx::rpc(
+                    target_rank, [](auto& contributions_recv, const vector<pair<uint32_t, double>>& contributions) {
+                        (*contributions_recv).insert((*contributions_recv).end(), contributions.begin(), contributions.end());
+                    },
+                    contributions_recv, contributions_destinations[target_rank] // Should I capture this instead?
+                )); // Join these together then wait on all at once if we feel like 
+            }
+        }
+
+        all_futures.wait();
+        upcxx::barrier();
+
+        for (pair<uint32_t, double> contribution_pair : (*contributions_recv)) {
+            uint32_t vertex = contribution_pair.first;
+            double contribution = contribution_pair.second;
+            local_pagerank[vertex - start_vertex] += contribution * damping_factor;
+        }
+        iteration++;
+    }
+    return local_pagerank;
 }
