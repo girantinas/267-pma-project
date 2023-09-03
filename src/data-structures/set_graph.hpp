@@ -7,11 +7,11 @@
 
 class SetGraph {
     public:
-        void insert(vertex_t from, vertex_t to) override;
-        bool query_edge(vertex_t from, vertex_t to) override;
+        void insert(vertex_t from, vertex_t to);
+        bool query_edge(vertex_t from, vertex_t to);
 
-        vector<int> bfs(vertex_t source) override;
-        vector<double> pagerank() override;
+        unordered_map<vertex_t, int> bfs(vertex_t source);
+        vector<double> pagerank();
 
         pair<vertex_t, vertex_t> random_edge(mt19937& rng);
         pair<vertex_t, vertex_t> random_non_edge(mt19937& rng);
@@ -56,13 +56,14 @@ pair<vertex_t, vertex_t> SetGraph::random_non_edge(mt19937& rng) {
     return get_edge_tuple(value_not_in_set);
 }
 
-vector<int> SetGraph::bfs(vertex_t source) {
+std::unordered_map<vertex_t, int> SetGraph::bfs(vertex_t source) {
     std::deque<std::pair<vertex_t, int>> bfs_queue;
     std::set<vertex_t> visited;
-    std::vector<int> distances(data.size(), -1);
+    std::unordered_map<vertex_t, int> distances;
     
     bfs_queue.push_back(std::make_pair(source, 0));
     visited.insert(source);
+    distances[source] = 0;
     while (!bfs_queue.empty()) {
         vertex_t v;
         int d;
@@ -71,8 +72,19 @@ vector<int> SetGraph::bfs(vertex_t source) {
         bfs_queue.pop_front();
         distances[v] = d;
 
-        // TODO: finish this
+        auto lo = data.lower_bound(make_edge_tuple(v, 0));
+        auto hi = data.upper_bound(make_edge_tuple(v, UINT32_MAX));
+        while (lo != hi) {
+            vertex_t neighbor = get_edge_tuple(*lo).second;
+            if (visited.find(neighbor) == visited.end()) {
+                bfs_queue.push_back(std::make_pair(neighbor, d + 1));
+                visited.insert(neighbor);
+            }
+            lo++;
+        }
     }
+
+    return distances;
 }
 
 // requires num_vertices to be correct, i.e. # vertices is correctly known before inserts

@@ -1,10 +1,11 @@
 #include "../data-structures/dist_pcsr2.hpp"
-#include "../data-structures/set-graph.hpp"
+#include "../data-structures/set_graph.hpp"
 
 #include <upcxx/upcxx.hpp>
 #include <chrono>
 #include <iostream>
 #include <random>
+#include <unordered_map>
 
 mt19937 rng(42);
 
@@ -41,9 +42,8 @@ int main() {
     }
     */
 
-
     SetGraph reference;
-    const int NUM_ITERATIONS = 1e5;
+    const int NUM_ITERATIONS = 2e3;
     const int INSERT_PHASE_SIZE = 1e4;
     const int QUERY_PHASE_SIZE = 1e2;
 
@@ -106,10 +106,26 @@ int main() {
             }
         }
 
-        if (i % 100 == 0 && upcxx::rank_me() == 0) {
+        if (i % 1000 == 0 && upcxx::rank_me() == 0) {
             cout << i << endl;
         }
     }
 
+    vertex_t source, target;
+    tie(source, target) = reference.random_edge(rng);
+    std::unordered_map<vertex_t, int> distances = reference.bfs(source);
+    std::unordered_map<vertex_t, int> pcsr_distances = pcsr->bfs(source);
+    upcxx::barrier();
+
+    upcxx::dist_object<std::unordered_map<vertex_t, int>> dist_distances(pcsr_distances);
+    if (upcxx::rank_me() == 0) {
+        for (int rank = 1; rank < upcxx::rank_n(); rank += 1) {
+            std::unordered_map<vertex_t, int> remote_distances = dist_distances.fetch(rank).wait();
+            pcsr_distances.insert(remote_distances.begin(), remote_distances.end());
+        }
+    }
+    
+    assert(distances == pcsr_distances);
+    
     upcxx::finalize();
 }

@@ -1,6 +1,7 @@
 #include "utils.hpp"
 #include "set_pma.hpp"
 #include <deque>
+#include <unordered_map>
 #include <upcxx/upcxx.hpp>
 #include <iostream>
 
@@ -14,7 +15,7 @@ struct Command {
     uint32_t target_rank;
 };
         
-class DistPCSR : public Graph {
+class DistPCSR {
     public:
         static upcxx::dist_object<DistPCSR> make_dist_pcsr(int initial_capacity);
         int capacity();
@@ -26,6 +27,7 @@ class DistPCSR : public Graph {
 
         upcxx::future<bool> query_edge(edge_t edge);
         upcxx::future<bool> query_edge(vertex_t from, vertex_t to);
+        unordered_map<vertex_t, int> bfs(vertex_t source);
 
         void flush_queue();
     private:
@@ -61,7 +63,11 @@ class DistPCSR : public Graph {
         vector<vector<Command>> get_redistribute_commands(vector<uint64_t>& element_counts, uint32_t start_proc, uint32_t num_procs, uint64_t total_elements);
         upcxx::future<> retrieve_command(Command command);
         void swap_all_data(int lowest_proc, int num_procs, vector<range_t>& updated_ranges);
-        make_vertex_ranges();
+        vector<vertex_t> make_vertex_ranges();
+        uint32_t vertex_target_rank(vector<vertex_t>& vertex_ranges, vertex_t v);
+        upcxx::future<> add_neighbors_to_set(uint32_t from, unordered_set<uint32_t>& dest);
+        vector<vertex_t> neighbors_local(vertex_t from);
+
 };
 
 
@@ -475,12 +481,14 @@ void DistPCSR::swap_all_data(int lowest_proc, int num_procs, vector<range_t>& up
 vector<vertex_t> DistPCSR::make_vertex_ranges() {
     vector<vertex_t> vertex_ranges;
     for (range_t range : edge_ranges) {
-        pair<vertex_t, vertex_t> range_start = get_edge_tuple(range.second);
+        edge_t range_start_edge = std::get<1>(range);
+        pair<vertex_t, vertex_t> range_start = get_edge_tuple(range_start_edge);
         vertex_ranges.push_back(range_start.first);
     }
     return vertex_ranges;
 }
 
+// returns owner of vertex. may or may not contain all of the edges associated with vertex
 uint32_t DistPCSR::vertex_target_rank(vector<vertex_t>& vertex_ranges, vertex_t v) {
     int current_argmin = 0;
     while(current_argmin < vertex_ranges.size() && vertex_ranges[current_argmin] < v) {
@@ -495,21 +503,54 @@ uint32_t DistPCSR::vertex_target_rank(vector<vertex_t>& vertex_ranges, vertex_t 
     }
 }
 
-vector<int> DistPCSR::bfs(vertex_t source) {
-    vector<vertex_t> vertex_ranges = make_vertex_ranges(pcsr);
+vector<vertex_t> DistPCSR::neighbors_local(vertex_t from) {
+    vector<vertex_t> edge_list;
+    auto edge_adder = SetPMA::range_func([&edge_list](edge_t e){
+        edge_list.push_back(get_edge_tuple(e).second);
+    });
+    pma.range(make_edge_tuple(from, 0), make_edge_tuple(from, UINT32_MAX), edge_adder);
+    return edge_list;
+}
+
+upcxx::future<> DistPCSR::add_neighbors_to_set(uint32_t from, unordered_set<uint32_t>& dest) {
+    uint32_t begin_rank = target_rank(from, 0);
+    uint32_t end_rank = target_rank(from, UINT32_MAX);
+
+    upcxx::future<> finish_future = upcxx::make_future();
+    for (int rank = begin_rank; rank <= end_rank; ++rank) {
+        if (rank == upcxx::rank_me()) {
+            for (vertex_t v : neighbors_local(from)) {
+                dest.insert(v);
+            };
+        } else {
+            auto f = upcxx::rpc(rank, 
+                [from](upcxx::dist_object<DistPCSR>& local_pcsr) {
+                    return local_pcsr->neighbors_local(from);
+                }, *dist_pcsr_obj
+            ).then([&dest](vector<vertex_t> v) {
+                dest.insert(v.begin(), v.end());
+            });
+            finish_future = upcxx::when_all(f, finish_future);
+        }
+    }
+    return finish_future;
+}
+
+unordered_map<vertex_t, int> DistPCSR::bfs(vertex_t source) {
+    vector<vertex_t> vertex_ranges = make_vertex_ranges();
     vertex_t start_vertex = vertex_ranges[upcxx::rank_me()];
-    vertex_t end_vertex = vertex_ranges[upcxx::rank_me() + 1];
+    vertex_t end_vertex = (upcxx::rank_me() != upcxx::rank_n() - 1) ? vertex_ranges[upcxx::rank_me() + 1] : UINT32_MAX;
 
     uint32_t local_num_vertices = end_vertex - start_vertex;
 
-    vector<int> local_distances(local_num_vertices, -1);
+    unordered_map<vertex_t, int> local_distances;
 
     if (local_num_vertices == 0) {
         return local_distances;
     }
 
     if (source >= start_vertex && source < end_vertex) {
-        local_distances[source - start_vertex] = 0;
+        local_distances[source] = 0;
     }
 
     deque<vertex_t> frontier;
@@ -528,6 +569,7 @@ vector<int> DistPCSR::bfs(vertex_t source) {
     int level = 0;
 
     upcxx::dist_object<vector<vertex_t>> next_set_recv{vector<vertex_t>()};
+    // outgoing set of vertices for next step
     vector<vector<vertex_t>> vertex_destinations;
     vertex_destinations.resize(upcxx::rank_n());
     
@@ -545,8 +587,8 @@ vector<int> DistPCSR::bfs(vertex_t source) {
         }
 
         upcxx::future<> all_futures = upcxx::make_future();
-        for (uint32_t vertex : frontier) {
-            upcxx::future<> fut = add_neighbors_to_set(pcsr, vertex, next_set);
+        for (vertex_t vertex : frontier) {
+            upcxx::future<> fut = add_neighbors_to_set(vertex, next_set);
             all_futures = upcxx::when_all(all_futures, fut);
         }   
         all_futures.wait();
@@ -586,10 +628,10 @@ vector<int> DistPCSR::bfs(vertex_t source) {
         upcxx::barrier();
         frontier.clear();
 
-        for (uint32_t vertex : *next_set_recv) {
-            int val = local_distances[vertex - start_vertex];
-            if (local_distances[vertex - start_vertex] == -1) {
-                local_distances[vertex - start_vertex] = level + 1;
+        for (vertex_t vertex : *next_set_recv) {
+            int val = local_distances[vertex];
+            if (local_distances.find(vertex) == local_distances.end()) {
+                local_distances[vertex] = level + 1;
                 frontier.push_back(vertex);
             }
         }
@@ -600,7 +642,7 @@ vector<int> DistPCSR::bfs(vertex_t source) {
 }
 
 
-
+/*
 vector<double> SetGraph::pagerank() {
     double epsilon = 0.0000001;
     double damping_factor = 0.85;
@@ -681,3 +723,4 @@ vector<double> SetGraph::pagerank() {
     }
     return local_pagerank;
 }
+*/

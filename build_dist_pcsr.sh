@@ -4,4 +4,4 @@ export GASNET_BACKTRACE=1
 export GASNET_OFI_RECEIVE_BUFF_SIZE=single
 # export GASNET_BACKTRACE_SIGNAL=SIGUSR
 # salloc -N 16 -A mp309 -t 5:00 -q regular -C cpu srun -N 16 -n 1024 ./main_dist_pcsr
-srun -N 8 -n 32 ./main_dist_pcsr
+srun -N 4 -n 16 ./main_dist_pcsr
